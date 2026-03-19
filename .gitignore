@@ -8,6 +8,8 @@
 *.json
 # 忽略存放数据的文件夹（假设组员起名叫 data 或 Data）
 [Dd]ata/
+# 忽略 SQLite 数据库文件
+*.db
 
 # --- C++ 编译垃圾清理 ---
 # 过滤 Visual Studio 产生的临时文件
