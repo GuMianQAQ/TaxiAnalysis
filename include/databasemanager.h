@@ -3,20 +3,21 @@
 
 #include <QSqlDatabase>
 #include <QString>
+#include <QtGlobal>
 #include <vector>
-#include "datamanager.h" 
+#include "datamanager.h"
 
 class DatabaseManager {
 public:
-    DatabaseManager(const QString &dbName = "taxi_data.db");
+    explicit DatabaseManager(const QString &dbName = "taxi_data.db");
     ~DatabaseManager();
 
     bool open();
-    // 核心：批量插入内存中的数据
     bool batchInsert(const std::vector<GPSPoint>& points);
+    qint64 getPointCount();
 
 private:
     QSqlDatabase db;
 };
 
-#endif
+#endif // DATABASEMANAGER_H
