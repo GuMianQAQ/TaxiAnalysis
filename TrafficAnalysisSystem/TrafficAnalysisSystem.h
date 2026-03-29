@@ -4,7 +4,9 @@
 #include <QMainWindow>
 #include <QPushButton>
 #include <QVBoxLayout>
+#include <QHBoxLayout>
 #include <QWidget>
+#include <QtWebEngineWidgets/QWebEngineView>
 
 class TrafficAnalysisSystem : public QMainWindow
 {
@@ -15,14 +17,27 @@ public:
     ~TrafficAnalysisSystem();
 
 private:
+    void loadMap();
+
+private:
     QWidget *centralWidget;
-    QVBoxLayout *layout;
+
+    // 总布局：左边按钮，右边地图
+    QHBoxLayout *mainLayout;
+
+    // 左侧按钮区
+    QWidget *buttonPanel;
+    QVBoxLayout *buttonLayout;
+
     QPushButton *btn1;
     QPushButton *btn2;
     QPushButton *btn3;
     QPushButton *btn4;
     QPushButton *btn5;
     QPushButton *btn6;
+
+    // 右侧地图区
+    QWebEngineView *webView;
 };
 
 #endif // TRAFFICANALYSISSYSTEM_H

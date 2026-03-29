@@ -6,6 +6,7 @@
 struct AppConfig {
     QString dataDir;
     QString dbPath;
+    QString mapPath;
 
     double minLon;
     double maxLon;

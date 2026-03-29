@@ -11,9 +11,9 @@ set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 
 # 2. 寻找 Qt 组件 (兼容 Qt6 和 Qt5，并加入 Sql 模块)
-find_package(Qt6 COMPONENTS Core Gui Widgets Sql QUIET)
+find_package(Qt6 COMPONENTS Core Gui Widgets Sql WebEngineWidgets  QUIET )
 if(NOT Qt6_FOUND)
-    find_package(Qt5 5.15 COMPONENTS Core Gui Widgets Sql REQUIRED)
+    find_package(Qt5 5.15 COMPONENTS Core Gui Widgets Sql WebEngineWidgets  REQUIRED)
 endif()
 
 # 3. 包含头文件目录
@@ -23,9 +23,9 @@ include_directories(TrafficAnalysisSystem)
 
 # 4. 自动扫描所有源文件
 # 这样以后组员新加了 .cpp 文件，只要在这些文件夹里，就不用手动改 CMake
-file(GLOB_RECURSE SOURCES 
+file(GLOB_RECURSE SOURCES
     "main.cpp"
-    "src/*.cpp" 
+    "src/*.cpp"
     "include/*.h"
     "TrafficAnalysisSystem/*.cpp"
     "TrafficAnalysisSystem/*.h"
@@ -37,9 +37,21 @@ add_executable(TaxiDataAnalysis ${SOURCES})
 
 # 6. 链接 Qt 库 (根据找到的版本自动链接)
 if(Qt6_FOUND)
-    target_link_libraries(TaxiDataAnalysis PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Sql)
+    target_link_libraries(TaxiDataAnalysis PRIVATE
+        Qt6::Core
+        Qt6::Gui
+        Qt6::Widgets
+        Qt6::Sql
+        Qt6::WebEngineWidgets
+    )
 else()
-    target_link_libraries(TaxiDataAnalysis PRIVATE Qt5::Core Qt5::Gui Qt5::Widgets Qt5::Sql)
+    target_link_libraries(TaxiDataAnalysis PRIVATE
+        Qt5::Core
+        Qt5::Gui
+        Qt5::Widgets
+        Qt5::Sql
+        Qt5::WebEngineWidgets
+    )
 endif()
 
 # 7. 设置输出路径与安装规则

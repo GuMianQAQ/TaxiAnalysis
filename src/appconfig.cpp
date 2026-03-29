@@ -8,6 +8,7 @@ AppConfig AppConfig::load(const QString& configPath) {
 
     cfg.dataDir = settings.value("Paths/data_dir", "./data").toString();
     cfg.dbPath = settings.value("Paths/db_path", "./taxi_data.db").toString();
+    cfg.mapPath=settings.value("Paths/map_path", "./map.html").toString();
 
     cfg.minLon = settings.value("Filter/min_lon", 115.0).toDouble();
     cfg.maxLon = settings.value("Filter/max_lon", 118.0).toDouble();
