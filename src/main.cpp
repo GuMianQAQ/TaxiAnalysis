@@ -109,7 +109,7 @@ void checkAndImportData(DatabaseManager &dbm, const AppConfig& config) {
 int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
 
-    QString configPath = QDir::currentPath() + "/config.ini";
+    QString configPath = findConfigPath()+ "/config.ini";
     AppConfigManager::init(configPath);
     const AppConfig& config = AppConfigManager::get();
 
@@ -132,7 +132,7 @@ int main(int argc, char *argv[]) {
 
     qDebug() << "加载到内存的点数量:" << DataManager::getAllPoints().size();
 
-    DataManager::buildQuadTree(config, 1000);
+    DataManager::buildQuadTree(config);
 
     TrafficAnalysisSystem window(&dbm);
     window.show();

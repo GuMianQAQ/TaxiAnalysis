@@ -91,9 +91,9 @@ void DataManager::loadTxtFiles(const AppConfig& config) {
     qDebug() << "无效时间数:" << invalidTimeCount;
 }
 
-void DataManager::buildQuadTree(const AppConfig& config, int capacity) {
+void DataManager::buildQuadTree(const AppConfig& config) {
     quadTreeRoot.reset();
-
+    int capacity=config.rectCapacity;
     if (allPoints.empty()) {
         qDebug() << "buildQuadTree: allPoints 为空，无法建立四叉树";
         return;

@@ -24,7 +24,7 @@ public:
     static const std::vector<GPSPoint>& getAllPoints() { return allPoints; }
 
     // 新增：建立四叉树
-    static void buildQuadTree(const AppConfig& config, int capacity = 1000);
+    static void buildQuadTree(const AppConfig& config);
 
     // 新增：判断四叉树是否已建立
     static bool hasQuadTree();
