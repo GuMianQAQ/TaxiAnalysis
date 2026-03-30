@@ -93,9 +93,7 @@ TrafficAnalysisSystem::~TrafficAnalysisSystem()
 
 void TrafficAnalysisSystem::loadMap()
 {
-    QString configPath = QDir::currentPath() + "/config.ini";
-    AppConfig config = AppConfig::load(configPath);
-
+    const AppConfig& config = AppConfigManager::get();
     QString htmlPath = config.mapPath;
     QFileInfo fileInfo(htmlPath);
 

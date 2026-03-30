@@ -25,3 +25,12 @@ AppConfig AppConfig::load(const QString& configPath) {
 
     return cfg;
 }
+AppConfig AppConfigManager::config;
+
+void AppConfigManager::init(const QString& configPath) {
+    config = AppConfig::load(configPath);
+}
+
+const AppConfig& AppConfigManager::get() {
+    return config;
+}

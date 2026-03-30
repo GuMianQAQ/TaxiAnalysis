@@ -23,5 +23,12 @@ struct AppConfig {
 
     static AppConfig load(const QString& configPath);
 };
+class AppConfigManager {
+public:
+    static void init(const QString& configPath);
+    static const AppConfig& get();
 
+private:
+    static AppConfig config;
+};
 #endif // APPCONFIG_H

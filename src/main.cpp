@@ -94,7 +94,8 @@ int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
 
     QString configPath = QDir::currentPath() + "/config.ini";
-    AppConfig config = AppConfig::load(configPath);
+    AppConfigManager::init(configPath);
+    const AppConfig& config = AppConfigManager::get();
 
     qDebug() << "配置文件路径:" << configPath;
     qDebug() << "数据目录:" << config.dataDir;
@@ -107,6 +108,15 @@ int main(int argc, char *argv[]) {
     }
 
     checkAndImportData(dbm, config);
+
+    if (!DataManager::loadFromDatabase(dbm)) {
+        qDebug() << "从数据库加载点到内存失败";
+        return -1;
+    }
+
+    qDebug() << "加载到内存的点数量:" << DataManager::getAllPoints().size();
+
+    DataManager::buildQuadTree(config, 1000);
 
     TrafficAnalysisSystem window;
     window.show();

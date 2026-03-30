@@ -90,3 +90,48 @@ qint64 DatabaseManager::getPointCount() {
 
     return 0;
 }
+bool DatabaseManager::loadAllPoints(std::vector<GPSPoint>& points) {
+    points.clear();
+
+    if (!db.isOpen()) {
+        qDebug() << "数据库未打开，无法加载点数据";
+        return false;
+    }
+
+    qint64 totalCount = getPointCount();
+    if (totalCount <= 0) {
+        qDebug() << "数据库中没有点数据";
+        return true;
+    }
+
+    // 预分配，减少 vector 扩容次数
+    points.reserve(static_cast<size_t>(totalCount));
+
+    QSqlQuery query;
+    query.setForwardOnly(true);  // 大数据量时更省内存
+
+    if (!query.exec("SELECT id, time, lon, lat FROM taxi_points")) {
+        qDebug() << "读取点数据失败:" << query.lastError().text();
+        return false;
+    }
+
+    qint64 loadedCount = 0;
+
+    while (query.next()) {
+        GPSPoint p;
+        p.id = query.value(0).toInt();
+        p.timestamp = query.value(1).toLongLong();
+        p.lon = query.value(2).toDouble();
+        p.lat = query.value(3).toDouble();
+
+        points.push_back(p);
+        ++loadedCount;
+
+        if (loadedCount % 1000000 == 0) {
+            qDebug() << "已加载" << loadedCount << "个点到内存...";
+        }
+    }
+
+    qDebug() << "全部点加载完成，共" << loadedCount << "个点";
+    return true;
+}

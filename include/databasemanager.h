@@ -15,7 +15,7 @@ public:
     bool open();
     bool batchInsert(const std::vector<GPSPoint>& points);
     qint64 getPointCount();
-
+    bool loadAllPoints(std::vector<GPSPoint>& points);
 private:
     QSqlDatabase db;
 };
