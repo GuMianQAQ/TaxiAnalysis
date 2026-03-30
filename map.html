@@ -299,7 +299,18 @@
         Object.keys(grid).forEach(function (key) {
             var item = grid[key];
             var center = new BMap.Point(item.sumLng / item.count, item.sumLat / item.count);
-            var label = createCountLabel(center, "热点", "#d62828");
+            var label = createCountLabel(center, "", "#d62828");
+            label.setStyle({
+                color: "transparent",
+                backgroundColor: "#d62828",
+                border: "0",
+                borderRadius: "50%",
+                width: "14px",
+                height: "14px",
+                padding: "0",
+                lineHeight: "14px",
+                boxShadow: "0 2px 10px rgba(0,0,0,0.18)"
+            });
             addOverlayAndStore(label);
         });
     }
