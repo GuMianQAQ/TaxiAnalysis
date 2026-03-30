@@ -11,6 +11,22 @@
 #include "databasemanager.h"
 #include "TrafficAnalysisSystem.h"
 
+QString findConfigPath() {
+    const QStringList candidates = {
+        QDir::current().absoluteFilePath("config.ini"),
+        QCoreApplication::applicationDirPath() + "/config.ini",
+        QDir(QCoreApplication::applicationDirPath()).absoluteFilePath("../config.ini"),
+        QDir(QCoreApplication::applicationDirPath()).absoluteFilePath("../../config.ini")
+    };
+
+    for (const QString& path : candidates) {
+        if (QFileInfo::exists(path)) {
+            return QDir::cleanPath(path);
+        }
+    }
+
+    return QDir::cleanPath(QDir::current().absoluteFilePath("config.ini"));
+}
 void checkAndImportData(DatabaseManager &dbm, const AppConfig& config) {
     if ( dbm.getPointCount() > 0) {
         qDebug() << "检测到数据库已有数据，跳过导入。当前点数:" << dbm.getPointCount();
@@ -118,7 +134,7 @@ int main(int argc, char *argv[]) {
 
     DataManager::buildQuadTree(config, 1000);
 
-    TrafficAnalysisSystem window;
+    TrafficAnalysisSystem window(&dbm);
     window.show();
 
     return app.exec();

@@ -1,6 +1,7 @@
 # --- 忽略编译垃圾 ---
 .vs/
 bin/
+cmake-build-*/
 build/
 out/
 [Dd]ata/
@@ -10,6 +11,11 @@ out/
 *.suo
 *.pdb
 *.ilk
+*.dll
+*.exe
+*.obj
+*.lib
+*.exp
 
 # --- 忽略数据库 (保护 1.5GB 不被上传) ---
 *.db
@@ -21,4 +27,4 @@ out/
 !src/
 !include/
 !TrafficAnalysisSystem/
-/自己的东西
+自己的东西-*/
