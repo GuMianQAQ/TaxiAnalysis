@@ -1,0 +1,29 @@
+# --- 忽略编译垃圾 ---
+.vs/
+bin/
+cmake-build-*/
+build/
+out/
+[Dd]ata/
+*.user
+*.aps
+*.ncb
+*.suo
+*.pdb
+*.ilk
+*.dll
+*.exe
+*.obj
+*.lib
+*.exp
+
+# --- 忽略数据库 (保护 1.5GB 不被上传) ---
+*.db
+*.db-journal
+
+# --- 绝对禁止忽略的文件 (强制保护) ---
+!CMakeLists.txt
+!main.cpp
+!src/
+!include/
+!TrafficAnalysisSystem/
