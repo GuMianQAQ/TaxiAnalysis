@@ -6,7 +6,7 @@
 #include <memory>
 #include "appconfig.h"
 #include "quadtree.h"
-
+#include<set>
 class DatabaseManager;
 
 struct GPSPoint {
@@ -22,7 +22,6 @@ public:
     static bool loadFromDatabase(DatabaseManager& dbm);
 
     static const std::vector<GPSPoint>& getAllPoints() { return allPoints; }
-
     // 新增：建立四叉树
     static void buildQuadTree(const AppConfig& config);
 
@@ -33,7 +32,9 @@ public:
     static std::vector<GPSPoint> queryRange(double minLon, double minLat,
                                             double maxLon, double maxLat);
 
+    static std::set<const QuadNode*> exceptionalNodes;
 private:
+
     static std::vector<GPSPoint> allPoints;
     static std::unique_ptr<QuadNode> quadTreeRoot;
 };

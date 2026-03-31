@@ -27,13 +27,21 @@ public:
     std::vector<int> points;
     int depth;
 
+    int maxDepth;
+    double minCellSize;
+
     QuadNode* nw;
     QuadNode* ne;
     QuadNode* sw;
     QuadNode* se;
     bool divided;
 
-    QuadNode(Rect b, int cap = 500, int nodeDepth = 0);
+    QuadNode(Rect b,
+             int cap = 500,
+             int nodeDepth = 0,
+             int maxNodeDepth = 64,
+             double minNodeCellSize = 1e-7);
+
     ~QuadNode();
 
     bool insert(int pointIdx, const std::vector<struct GPSPoint>& allData);

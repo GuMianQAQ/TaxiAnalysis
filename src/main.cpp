@@ -116,7 +116,9 @@ int main(int argc, char *argv[]) {
     }
     AppConfigManager::init(configPath);
     const AppConfig& config = AppConfigManager::get();
-
+    qDebug() << "区域最大节点数量:" << config.rectCapacity;
+    qDebug() << "四叉树最大节点深度:" << config.maxQuadTreeDepth;
+    qDebug() << "四叉树最小节点边长:" << config.minQuadCellSize;
     qDebug() << "配置文件路径:" << configPath;
     qDebug() << "数据目录:" << config.dataDir;
     qDebug() << "数据库路径:" << config.dbPath;
@@ -136,8 +138,7 @@ int main(int argc, char *argv[]) {
 
     qDebug() << "加载到内存的点数量:" << DataManager::getAllPoints().size();
 
-    DataManager::buildQuadTree(config, 1000);
-
+    DataManager::buildQuadTree(config);
     TrafficAnalysisSystem window(&dbm);
     window.show();
 

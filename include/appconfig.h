@@ -21,6 +21,9 @@ struct AppConfig {
     int mapMinZoom;
     int mapMaxZoom;
     int rectCapacity;
+
+    int maxQuadTreeDepth;
+    double minQuadCellSize;
     static AppConfig load(const QString& configPath);
 };
 class AppConfigManager {

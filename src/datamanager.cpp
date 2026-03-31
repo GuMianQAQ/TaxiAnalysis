@@ -9,9 +9,10 @@
 
 std::vector<GPSPoint> DataManager::allPoints;
 std::unique_ptr<QuadNode> DataManager::quadTreeRoot = nullptr;
-
+std::set<const QuadNode*> DataManager::exceptionalNodes;
 bool DataManager::loadFromDatabase(DatabaseManager& dbm) {
     allPoints.clear();
+    exceptionalNodes.clear();
     quadTreeRoot.reset();   // 数据重载时，旧树作废
     return dbm.loadAllPoints(allPoints);
 }
@@ -19,7 +20,7 @@ bool DataManager::loadFromDatabase(DatabaseManager& dbm) {
 void DataManager::loadTxtFiles(const AppConfig& config) {
     allPoints.clear();
     quadTreeRoot.reset();   // 数据重载时，旧树作废
-
+    exceptionalNodes.clear();
     qDebug() << "正在扫描文件夹:" << config.dataDir << "(文件较多，请稍候...)";
     qDebug() << "开始解析文件内容...";
     qDebug() << "过滤范围:"
@@ -93,6 +94,7 @@ void DataManager::loadTxtFiles(const AppConfig& config) {
 
 void DataManager::buildQuadTree(const AppConfig& config) {
     quadTreeRoot.reset();
+    exceptionalNodes.clear();
     int capacity=config.rectCapacity;
     if (allPoints.empty()) {
         qDebug() << "buildQuadTree: allPoints 为空，无法建立四叉树";
@@ -105,7 +107,13 @@ void DataManager::buildQuadTree(const AppConfig& config) {
     rootRect.w = (config.maxLon - config.minLon) / 2.0;
     rootRect.h = (config.maxLat - config.minLat) / 2.0;
 
-    quadTreeRoot = std::make_unique<QuadNode>(rootRect, capacity);
+    quadTreeRoot = std::make_unique<QuadNode>(
+        rootRect,
+        capacity,
+        0,
+        config.maxQuadTreeDepth,
+        config.minQuadCellSize
+        );
 
     qDebug() << "开始建立四叉树，总点数:" << allPoints.size()
              << "节点容量:" << capacity;
@@ -128,6 +136,19 @@ void DataManager::buildQuadTree(const AppConfig& config) {
 
     qDebug() << "四叉树建立完成，成功插入:" << insertedCount
              << "失败:" << failedCount;
+    qDebug() << "异常节点数量:" << exceptionalNodes.size();
+    for (const QuadNode* node : exceptionalNodes) {
+        qDebug() << qSetRealNumberPrecision(15) <<"异常节点经纬度范围："<< node->boundary.x-node->boundary.w
+            <<"-"
+            << node->boundary.x+node->boundary.w
+            <<","
+            << node->boundary.y-node->boundary.h
+            <<"-"
+            << node->boundary.y+node->boundary.h
+            ;
+        qDebug()<<"异常节点内部点:"<<node->points.size();
+        qDebug()<<"异常节点深度:"<<node->depth;
+    }
 }
 
 bool DataManager::hasQuadTree() {

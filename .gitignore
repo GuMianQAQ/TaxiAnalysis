@@ -16,7 +16,7 @@ out/
 *.obj
 *.lib
 *.exp
-
+processed_data/
 # --- 忽略数据库 (保护 1.5GB 不被上传) ---
 *.db
 *.db-journal

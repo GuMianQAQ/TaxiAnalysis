@@ -1,22 +1,24 @@
 #include "quadtree.h"
 #include "datamanager.h"
 
+#include <QDebug>
 #include <utility>
 
-namespace {
-constexpr int kMaxQuadTreeDepth = 24;
-constexpr double kMinQuadCellSize = 1e-7;
-}
-
-QuadNode::QuadNode(Rect b, int cap, int nodeDepth)
+QuadNode::QuadNode(Rect b,
+                   int cap,
+                   int nodeDepth,
+                   int maxNodeDepth,
+                   double minNodeCellSize)
     : boundary(b),
-      capacity(cap),
-      depth(nodeDepth),
-      nw(nullptr),
-      ne(nullptr),
-      sw(nullptr),
-      se(nullptr),
-      divided(false) {}
+    capacity(cap),
+    depth(nodeDepth),
+    maxDepth(maxNodeDepth),
+    minCellSize(minNodeCellSize),
+    nw(nullptr),
+    ne(nullptr),
+    sw(nullptr),
+    se(nullptr),
+    divided(false) {}
 
 QuadNode::~QuadNode() {
     if (divided) {
@@ -28,9 +30,14 @@ QuadNode::~QuadNode() {
 }
 
 bool QuadNode::canSubdivide() const {
-    return depth < kMaxQuadTreeDepth &&
-           boundary.w > kMinQuadCellSize &&
-           boundary.h > kMinQuadCellSize;
+    if (depth < maxDepth &&
+        boundary.w > minCellSize &&
+        boundary.h > minCellSize) {
+        return true;
+    }
+
+    DataManager::exceptionalNodes.insert(this);
+    return false;
 }
 
 void QuadNode::subdivide(const std::vector<GPSPoint>& allData) {
@@ -39,10 +46,10 @@ void QuadNode::subdivide(const std::vector<GPSPoint>& allData) {
     const double w = boundary.w / 2.0;
     const double h = boundary.h / 2.0;
 
-    nw = new QuadNode({x - w, y + h, w, h}, capacity, depth + 1);
-    ne = new QuadNode({x + w, y + h, w, h}, capacity, depth + 1);
-    sw = new QuadNode({x - w, y - h, w, h}, capacity, depth + 1);
-    se = new QuadNode({x + w, y - h, w, h}, capacity, depth + 1);
+    nw = new QuadNode({x - w, y + h, w, h}, capacity, depth + 1, maxDepth, minCellSize);
+    ne = new QuadNode({x + w, y + h, w, h}, capacity, depth + 1, maxDepth, minCellSize);
+    sw = new QuadNode({x - w, y - h, w, h}, capacity, depth + 1, maxDepth, minCellSize);
+    se = new QuadNode({x + w, y - h, w, h}, capacity, depth + 1, maxDepth, minCellSize);
     divided = true;
 
     std::vector<int> existingPoints = std::move(points);
@@ -99,16 +106,8 @@ void QuadNode::query(const Rect& range, std::vector<int>& found,
         return;
     }
 
-    if (nw) {
-        nw->query(range, found, allData);
-    }
-    if (ne) {
-        ne->query(range, found, allData);
-    }
-    if (sw) {
-        sw->query(range, found, allData);
-    }
-    if (se) {
-        se->query(range, found, allData);
-    }
+    if (nw) nw->query(range, found, allData);
+    if (ne) ne->query(range, found, allData);
+    if (sw) sw->query(range, found, allData);
+    if (se) se->query(range, found, allData);
 }
