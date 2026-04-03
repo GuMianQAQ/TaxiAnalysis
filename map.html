@@ -236,14 +236,14 @@
                 var label = createCountLabel(center, String(item.count));
 
                 (function(clusterItem) {
-                    label.addEventListener("click", function() {
-                        if (clusterItem.count <= 100 && clusterItem.children && clusterItem.children.length > 0) {
-                            renderChildrenPoints(clusterItem.children);
-                        } else {
-                            zoomToClusterBounds(clusterItem);
-                        }
-                    });
-                })(item);
+					label.addEventListener("click", function() {
+						if (clusterItem.children && clusterItem.children.length > 0) {
+							renderChildrenPoints(clusterItem.children);
+						} else {
+							zoomToClusterBounds(clusterItem);
+						}
+					});
+				})(item);
 
                 addOverlayAndStore(label);
             } else {

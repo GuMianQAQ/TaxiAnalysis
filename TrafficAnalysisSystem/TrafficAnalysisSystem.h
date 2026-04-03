@@ -90,6 +90,19 @@ private:
     std::vector<GPSPoint> samplePoints(const std::vector<GPSPoint>& points, size_t maxPoints) const;
     QString pointsToJsArray(const std::vector<GPSPoint>& points, size_t maxPoints) const;
     QString clusterPointsToJsArray(const std::vector<ClusterPoint>& points) const;
+
+    void expandViewportBounds(double minLon, double minLat,
+                              double maxLon, double maxLat,
+                              double scale,
+                              double& outMinLon, double& outMinLat,
+                              double& outMaxLon, double& outMaxLat) const;
+
+    bool isViewportInsideCache(double minLon, double minLat,
+                               double maxLon, double maxLat,
+                               int zoom) const;
+
+    void resetAllTaxiClusterCache();
+
 private:
     QWidget *centralWidget;
     QHBoxLayout *mainLayout;
@@ -118,7 +131,6 @@ private:
     double cachedRegionMaxLat;
     qint64 cachedRegionResult;
 
-    // 全出租车模式：根据当前视野和缩放动态聚合刷新
     bool allTaxiModeActive;
     QTimer *viewportSyncTimer;
     bool hasLastViewportState;
@@ -127,6 +139,14 @@ private:
     double lastViewportMaxLon;
     double lastViewportMaxLat;
     int lastViewportZoom;
+
+    // 全出租车聚类缓存
+    bool hasClusterCache;
+    double cachedClusterMinLon;
+    double cachedClusterMinLat;
+    double cachedClusterMaxLon;
+    double cachedClusterMaxLat;
+    int cachedClusterZoom;
 };
 
 #endif // TRAFFICANALYSISSYSTEM_H

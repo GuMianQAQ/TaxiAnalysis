@@ -65,12 +65,16 @@ double baseGridSizeByZoom(int zoom) {
 std::vector<ClusterPoint> buildClustersWithGrid(const std::vector<GPSPoint>& points,
                                                 double minLon, double minLat,
                                                 double maxLon, double maxLat,
-                                                double gridSize)
+                                                double gridSize,
+                                                int zoom)
 {
     std::vector<ClusterPoint> result;
     if (points.empty()) {
         return result;
     }
+
+    const int childTransferThreshold = 100;
+    const int childTransferZoom = 15;
 
     std::unordered_map<GridKey, ClusterBucket, GridKeyHash> buckets;
     buckets.reserve(points.size());
@@ -95,7 +99,7 @@ std::vector<ClusterPoint> buildClustersWithGrid(const std::vector<GPSPoint>& poi
         bucket.maxLon = std::max(bucket.maxLon, p.lon);
         bucket.maxLat = std::max(bucket.maxLat, p.lat);
 
-        if (bucket.count <= 100) {
+        if (zoom >= childTransferZoom && bucket.count <= childTransferThreshold) {
             bucket.children.push_back(p);
         }
     }
@@ -120,7 +124,7 @@ std::vector<ClusterPoint> buildClustersWithGrid(const std::vector<GPSPoint>& poi
         cp.maxLon = bucket.maxLon;
         cp.maxLat = bucket.maxLat;
 
-        if (bucket.count <= 100) {
+        if (zoom >= childTransferZoom && bucket.count <= childTransferThreshold) {
             cp.children = std::move(bucket.children);
         }
 
@@ -480,35 +484,17 @@ std::vector<ClusterPoint> DataManager::clusterPointsForView(const std::vector<GP
     const double safeMinLat = std::min(minLat, maxLat);
     const double safeMaxLat = std::max(minLat, maxLat);
 
-    // 高 zoom 且点很少时，直接显示原始点
-    if (zoom >= 17 && points.size() <= 100) {
-        result.reserve(points.size());
-        for (const auto& p : points) {
-            ClusterPoint cp{};
-            cp.lon = p.lon;
-            cp.lat = p.lat;
-            cp.count = 1;
-            cp.isCluster = false;
-            cp.minLon = p.lon;
-            cp.minLat = p.lat;
-            cp.maxLon = p.lon;
-            cp.maxLat = p.lat;
-            cp.children.push_back(p);
-            result.push_back(std::move(cp));
-        }
-        return result;
-    }
-
     double gridSize = baseGridSizeByZoom(zoom);
 
-    // 控制地图上一屏不要出现太多聚类
-    const int targetMaxClusters = 100;
+    // 原来 100，现在扩大到 2.25 倍 = 225
+    const int targetMaxClusters = 225;
 
     for (int attempt = 0; attempt < 8; ++attempt) {
         result = buildClustersWithGrid(points,
                                        safeMinLon, safeMinLat,
                                        safeMaxLon, safeMaxLat,
-                                       gridSize);
+                                       gridSize,
+                                       zoom);
 
         if (static_cast<int>(result.size()) <= targetMaxClusters) {
             break;

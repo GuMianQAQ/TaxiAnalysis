@@ -11,6 +11,7 @@
 #include <QUrl>
 #include <QVariant>
 
+#include <algorithm>
 #include <climits>
 #include <cmath>
 #include <vector>
@@ -135,7 +136,13 @@ TrafficAnalysisSystem::TrafficAnalysisSystem(DatabaseManager *dbManager, QWidget
     lastViewportMinLat(0.0),
     lastViewportMaxLon(0.0),
     lastViewportMaxLat(0.0),
-    lastViewportZoom(-1)
+    lastViewportZoom(-1),
+    hasClusterCache(false),
+    cachedClusterMinLon(0.0),
+    cachedClusterMinLat(0.0),
+    cachedClusterMaxLon(0.0),
+    cachedClusterMaxLat(0.0),
+    cachedClusterZoom(-1)
 {
     setWindowTitle(QStringLiteral("交通分析系统"));
     resize(1400, 800);
@@ -402,6 +409,7 @@ QString TrafficAnalysisSystem::clusterPointsToJsArray(const std::vector<ClusterP
 
     return "[" + items.join(",") + "]";
 }
+
 void TrafficAnalysisSystem::clearMap()
 {
     runJs("clearMap();");
@@ -464,6 +472,67 @@ void TrafficAnalysisSystem::fitViewToBounds(double minLon, double minLat, double
     fitViewToPoints(boundsPoints);
 }
 
+void TrafficAnalysisSystem::expandViewportBounds(double minLon, double minLat,
+                                                 double maxLon, double maxLat,
+                                                 double scale,
+                                                 double& outMinLon, double& outMinLat,
+                                                 double& outMaxLon, double& outMaxLat) const
+{
+    const double centerLon = (minLon + maxLon) * 0.5;
+    const double centerLat = (minLat + maxLat) * 0.5;
+
+    const double halfWidth = (maxLon - minLon) * 0.5 * scale;
+    const double halfHeight = (maxLat - minLat) * 0.5 * scale;
+
+    outMinLon = centerLon - halfWidth;
+    outMaxLon = centerLon + halfWidth;
+    outMinLat = centerLat - halfHeight;
+    outMaxLat = centerLat + halfHeight;
+
+    const AppConfig& config = AppConfigManager::get();
+    outMinLon = std::max(outMinLon, config.minLon);
+    outMaxLon = std::min(outMaxLon, config.maxLon);
+    outMinLat = std::max(outMinLat, config.minLat);
+    outMaxLat = std::min(outMaxLat, config.maxLat);
+}
+
+bool TrafficAnalysisSystem::isViewportInsideCache(double minLon, double minLat,
+                                                  double maxLon, double maxLat,
+                                                  int zoom) const
+{
+    if (!hasClusterCache) {
+        return false;
+    }
+
+    if (zoom != cachedClusterZoom) {
+        return false;
+    }
+
+    return minLon >= cachedClusterMinLon &&
+           minLat >= cachedClusterMinLat &&
+           maxLon <= cachedClusterMaxLon &&
+           maxLat <= cachedClusterMaxLat;
+}
+
+void TrafficAnalysisSystem::resetAllTaxiClusterCache()
+{
+    hasClusterCache = false;
+    cachedClusterMinLon = 0.0;
+    cachedClusterMinLat = 0.0;
+    cachedClusterMaxLon = 0.0;
+    cachedClusterMaxLat = 0.0;
+    cachedClusterZoom = -1;
+
+    hasLastViewportState = false;
+    lastViewportMinLon = 0.0;
+    lastViewportMinLat = 0.0;
+    lastViewportMaxLon = 0.0;
+    lastViewportMaxLat = 0.0;
+    lastViewportZoom = -1;
+
+    cachedAllPoints.clear();
+}
+
 void TrafficAnalysisSystem::onQueryTrajectory()
 {
     bool ok = false;
@@ -484,7 +553,7 @@ void TrafficAnalysisSystem::onQueryTrajectory()
 
     if (taxiId == 0) {
         allTaxiModeActive = true;
-        hasLastViewportState = false;
+        resetAllTaxiClusterCache();
         viewportSyncTimer->start();
 
         requestViewState([this](double minLon, double minLat, double maxLon, double maxLat, int zoom) {
@@ -495,6 +564,7 @@ void TrafficAnalysisSystem::onQueryTrajectory()
 
     allTaxiModeActive = false;
     viewportSyncTimer->stop();
+    resetAllTaxiClusterCache();
     showTaxiTrajectory(taxiId);
 }
 
@@ -505,6 +575,10 @@ void TrafficAnalysisSystem::onRegionSearch()
                              QStringLiteral("数据库管理器未初始化。"));
         return;
     }
+
+    allTaxiModeActive = false;
+    viewportSyncTimer->stop();
+    resetAllTaxiClusterCache();
 
     const qint64 defaultMinTime = QDateTime::fromString(QStringLiteral("2008-01-01 00:00:00"),
                                                         QStringLiteral("yyyy-MM-dd HH:mm:ss")).toSecsSinceEpoch();
@@ -526,9 +600,6 @@ void TrafficAnalysisSystem::onRegionSearch()
     if (dialog.exec() != QDialog::Accepted) {
         return;
     }
-
-    allTaxiModeActive = false;
-    viewportSyncTimer->stop();
 
     SimpleTimer timer = SimpleTimer("区域查询", true);
 
@@ -606,7 +677,9 @@ void TrafficAnalysisSystem::onRegionCorrelation()
 {
     allTaxiModeActive = false;
     viewportSyncTimer->stop();
+    resetAllTaxiClusterCache();
 
+    clearMap();
     showRect(116.00, 39.80, 116.20, 39.95);
     showRect(116.15, 39.90, 116.35, 40.05);
 
@@ -620,6 +693,9 @@ void TrafficAnalysisSystem::onFrequentPath()
 {
     allTaxiModeActive = false;
     viewportSyncTimer->stop();
+    resetAllTaxiClusterCache();
+
+    clearMap();
 
     std::vector<GPSPoint> traj1;
     traj1.push_back({10, 0, 116.38000000, 39.90000000});
@@ -647,6 +723,7 @@ void TrafficAnalysisSystem::onTravelTimeAnalysis()
 {
     allTaxiModeActive = false;
     viewportSyncTimer->stop();
+    resetAllTaxiClusterCache();
     clearMap();
 }
 
@@ -694,16 +771,52 @@ void TrafficAnalysisSystem::showAllTaxiPoints(double minLon, double minLat, doub
         return;
     }
 
-    std::vector<GPSPoint> points = DataManager::querySpatial(minLon, minLat, maxLon, maxLat);
+    // 先判断当前视野是否命中缓存
+    if (isViewportInsideCache(minLon, minLat, maxLon, maxLat, zoom)) {
+        hasLastViewportState = true;
+        lastViewportMinLon = minLon;
+        lastViewportMinLat = minLat;
+        lastViewportMaxLon = maxLon;
+        lastViewportMaxLat = maxLat;
+        lastViewportZoom = zoom;
+
+        qDebug() << "命中聚类缓存，跳过重新查询和聚类";
+        return;
+    }
+
+    // 没命中缓存，再按 1.5 倍视野进行查询和聚类
+    double queryMinLon = 0.0;
+    double queryMinLat = 0.0;
+    double queryMaxLon = 0.0;
+    double queryMaxLat = 0.0;
+
+    expandViewportBounds(minLon, minLat, maxLon, maxLat, 1.5,
+                         queryMinLon, queryMinLat,
+                         queryMaxLon, queryMaxLat);
+
+    qDebug() << "缓存未命中，扩展查询范围:"
+             << queryMinLon << "," << queryMinLat
+             << "-" << queryMaxLon << "," << queryMaxLat;
+
+    std::vector<GPSPoint> points = DataManager::querySpatial(queryMinLon, queryMinLat,
+                                                             queryMaxLon, queryMaxLat);
+
     std::vector<ClusterPoint> clustered = DataManager::clusterPointsForView(points,
-                                                                            minLon, minLat,
-                                                                            maxLon, maxLat,
+                                                                            queryMinLon, queryMinLat,
+                                                                            queryMaxLon, queryMaxLat,
                                                                             zoom);
 
     cachedAllPoints = std::move(points);
 
     clearMap();
     showClusteredPoints(clustered);
+
+    hasClusterCache = true;
+    cachedClusterMinLon = queryMinLon;
+    cachedClusterMinLat = queryMinLat;
+    cachedClusterMaxLon = queryMaxLon;
+    cachedClusterMaxLat = queryMaxLat;
+    cachedClusterZoom = zoom;
 
     hasLastViewportState = true;
     lastViewportMinLon = minLon;
@@ -713,5 +826,8 @@ void TrafficAnalysisSystem::showAllTaxiPoints(double minLon, double minLat, doub
     lastViewportZoom = zoom;
 
     qDebug() << "后端聚合显示完成。原始点数 =" << cachedAllPoints.size()
-             << ", 聚合后对象数 =" << clustered.size();
+             << ", 聚合后对象数 =" << clustered.size()
+             << ", 缓存区域 = "
+             << cachedClusterMinLon << "," << cachedClusterMinLat
+             << "-" << cachedClusterMaxLon << "," << cachedClusterMaxLat;
 }

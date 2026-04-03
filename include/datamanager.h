@@ -35,7 +35,7 @@ struct ClusterPoint {
     double maxLon;
     double maxLat;
 
-    std::vector<GPSPoint> children; // 只有 count <= 100 时才填充
+    std::vector<GPSPoint> children; // 只有局部聚类桶足够小且 zoom 足够大时才填充
 };
 
 class DataManager {
