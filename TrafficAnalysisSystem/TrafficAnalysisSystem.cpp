@@ -117,6 +117,8 @@ TrafficAnalysisSystem::TrafficAnalysisSystem(DatabaseManager *dbManager, QWidget
     btn4(nullptr),
     btn5(nullptr),
     btn6(nullptr),
+    btn7(nullptr),
+    btn8(nullptr),
     webView(nullptr),
     mapReady(false),
     dbManager(dbManager),
@@ -169,9 +171,11 @@ TrafficAnalysisSystem::TrafficAnalysisSystem(DatabaseManager *dbManager, QWidget
     btn1 = new QPushButton(QStringLiteral("查询轨迹"), buttonPanel);
     btn2 = new QPushButton(QStringLiteral("区域查找"), buttonPanel);
     btn3 = new QPushButton(QStringLiteral("车辆密度"), buttonPanel);
-    btn4 = new QPushButton(QStringLiteral("区域关联分析"), buttonPanel);
-    btn5 = new QPushButton(QStringLiteral("频繁路径分析"), buttonPanel);
-    btn6 = new QPushButton(QStringLiteral("通行时间分析"), buttonPanel);
+    btn4 = new QPushButton(QStringLiteral("区域关联分析1"), buttonPanel);
+    btn5 = new QPushButton(QStringLiteral("区域关联分析2"), buttonPanel);
+    btn6 = new QPushButton(QStringLiteral("频繁路径分析1"), buttonPanel);
+    btn7 = new QPushButton(QStringLiteral("频繁路径分析2"), buttonPanel);
+    btn8 = new QPushButton(QStringLiteral("通行时间分析"), buttonPanel);
 
     buttonLayout->addWidget(btn1);
     buttonLayout->addWidget(btn2);
@@ -179,6 +183,8 @@ TrafficAnalysisSystem::TrafficAnalysisSystem(DatabaseManager *dbManager, QWidget
     buttonLayout->addWidget(btn4);
     buttonLayout->addWidget(btn5);
     buttonLayout->addWidget(btn6);
+    buttonLayout->addWidget(btn7);
+    buttonLayout->addWidget(btn8);
     buttonLayout->addStretch();
 
     webView = new QWebEngineView(centralWidget);
@@ -196,9 +202,11 @@ TrafficAnalysisSystem::TrafficAnalysisSystem(DatabaseManager *dbManager, QWidget
     connect(btn1, &QPushButton::clicked, this, &TrafficAnalysisSystem::onQueryTrajectory);
     connect(btn2, &QPushButton::clicked, this, &TrafficAnalysisSystem::onRegionSearch);
     connect(btn3, &QPushButton::clicked, this, &TrafficAnalysisSystem::onVehicleDensity);
-    connect(btn4, &QPushButton::clicked, this, &TrafficAnalysisSystem::onRegionCorrelation);
-    connect(btn5, &QPushButton::clicked, this, &TrafficAnalysisSystem::onFrequentPath);
-    connect(btn6, &QPushButton::clicked, this, &TrafficAnalysisSystem::onTravelTimeAnalysis);
+    connect(btn4, &QPushButton::clicked, this, &TrafficAnalysisSystem::onRegionCorrelation1);
+    connect(btn5, &QPushButton::clicked, this, &TrafficAnalysisSystem::onRegionCorrelation2);
+    connect(btn6, &QPushButton::clicked, this, &TrafficAnalysisSystem::onFrequentPath1);
+    connect(btn7, &QPushButton::clicked, this, &TrafficAnalysisSystem::onFrequentPath2);
+    connect(btn8, &QPushButton::clicked, this, &TrafficAnalysisSystem::onTravelTimeAnalysis);
 
     viewportSyncTimer->setInterval(250);
     connect(viewportSyncTimer, &QTimer::timeout, this, [this]() {
@@ -673,13 +681,17 @@ void TrafficAnalysisSystem::onVehicleDensity()
                              QStringLiteral("当前“车辆密度”已改为后端聚合模式。\n请在“查询轨迹”中输入 0 查看全部出租车聚合结果。"));
 }
 
-void TrafficAnalysisSystem::onRegionCorrelation()
+void TrafficAnalysisSystem::prepareAnalysisView()
 {
     allTaxiModeActive = false;
     viewportSyncTimer->stop();
     resetAllTaxiClusterCache();
-
     clearMap();
+}
+
+void TrafficAnalysisSystem::onRegionCorrelation1()
+{
+    prepareAnalysisView();
     showRect(116.00, 39.80, 116.20, 39.95);
     showRect(116.15, 39.90, 116.35, 40.05);
 
@@ -689,13 +701,21 @@ void TrafficAnalysisSystem::onRegionCorrelation()
     fitViewToPoints(bounds);
 }
 
-void TrafficAnalysisSystem::onFrequentPath()
+void TrafficAnalysisSystem::onRegionCorrelation2()
 {
-    allTaxiModeActive = false;
-    viewportSyncTimer->stop();
-    resetAllTaxiClusterCache();
+    prepareAnalysisView();
+    showRect(116.28, 39.84, 116.46, 39.98);
+    showRect(116.40, 39.92, 116.58, 40.08);
 
-    clearMap();
+    std::vector<GPSPoint> bounds;
+    bounds.push_back({0, 0, 116.28, 39.84});
+    bounds.push_back({0, 0, 116.58, 40.08});
+    fitViewToPoints(bounds);
+}
+
+void TrafficAnalysisSystem::onFrequentPath1()
+{
+    prepareAnalysisView();
 
     std::vector<GPSPoint> traj1;
     traj1.push_back({10, 0, 116.38000000, 39.90000000});
@@ -719,12 +739,35 @@ void TrafficAnalysisSystem::onFrequentPath()
     fitViewToPoints(allPoints);
 }
 
+void TrafficAnalysisSystem::onFrequentPath2()
+{
+    prepareAnalysisView();
+
+    std::vector<GPSPoint> traj1;
+    traj1.push_back({20, 0, 116.30000000, 39.86000000});
+    traj1.push_back({20, 0, 116.32500000, 39.87500000});
+    traj1.push_back({20, 0, 116.35000000, 39.89000000});
+    traj1.push_back({20, 0, 116.38200000, 39.91200000});
+    traj1.push_back({20, 0, 116.41500000, 39.93800000});
+
+    std::vector<GPSPoint> traj2;
+    traj2.push_back({21, 0, 116.31500000, 39.85000000});
+    traj2.push_back({21, 0, 116.33800000, 39.86800000});
+    traj2.push_back({21, 0, 116.36000000, 39.88600000});
+    traj2.push_back({21, 0, 116.39200000, 39.90800000});
+    traj2.push_back({21, 0, 116.42800000, 39.93200000});
+
+    showTrajectory(traj1);
+    showTrajectory(traj2);
+
+    std::vector<GPSPoint> allPoints = traj1;
+    allPoints.insert(allPoints.end(), traj2.begin(), traj2.end());
+    fitViewToPoints(allPoints);
+}
+
 void TrafficAnalysisSystem::onTravelTimeAnalysis()
 {
-    allTaxiModeActive = false;
-    viewportSyncTimer->stop();
-    resetAllTaxiClusterCache();
-    clearMap();
+    prepareAnalysisView();
 }
 
 void TrafficAnalysisSystem::showTaxiTrajectory(int taxiId)

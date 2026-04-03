@@ -77,8 +77,10 @@ private slots:
     void onQueryTrajectory();
     void onRegionSearch();
     void onVehicleDensity();
-    void onRegionCorrelation();
-    void onFrequentPath();
+    void onRegionCorrelation1();
+    void onRegionCorrelation2();
+    void onFrequentPath1();
+    void onFrequentPath2();
     void onTravelTimeAnalysis();
 
 private:
@@ -86,6 +88,7 @@ private:
     void runJs(const QString& jsCode);
     void showTaxiTrajectory(int taxiId);
     void showAllTaxiPoints(double minLon, double minLat, double maxLon, double maxLat, int zoom);
+    void prepareAnalysisView();
 
     std::vector<GPSPoint> samplePoints(const std::vector<GPSPoint>& points, size_t maxPoints) const;
     QString pointsToJsArray(const std::vector<GPSPoint>& points, size_t maxPoints) const;
@@ -114,6 +117,8 @@ private:
     QPushButton *btn4;
     QPushButton *btn5;
     QPushButton *btn6;
+    QPushButton *btn7;
+    QPushButton *btn8;
     QWebEngineView *webView;
     bool mapReady;
     DatabaseManager *dbManager;

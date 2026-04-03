@@ -277,6 +277,21 @@ void DatabaseManager::checkAndImportData(DatabaseManager &dbm, const AppConfig& 
     }
 
     qDebug() << "--- 数据库为空，开始导入数据 ---";
+    const QDir dataDir(config.dataDir);
+    if (!dataDir.exists()) {
+        qDebug() << "Data directory does not exist, cannot import:" << config.dataDir;
+        return;
+    }
+
+    QDirIterator txtScan(config.dataDir,
+                         QStringList() << "*.txt",
+                         QDir::Files,
+                         QDirIterator::Subdirectories);
+    if (!txtScan.hasNext()) {
+        qDebug() << "No .txt files found under data directory, cannot import:" << config.dataDir;
+        return;
+    }
+
     QElapsedTimer timer;
     timer.start();
 

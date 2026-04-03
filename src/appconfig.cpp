@@ -27,6 +27,23 @@ AppConfig AppConfig::load(const QString& configPath) {
     cfg.dbPath = resolvePath(settings.value("Paths/db_path", "./taxi_data.db").toString());
     cfg.mapPath = resolvePath(settings.value("Paths/map_path", "./map.html").toString());
 
+    const QString fallbackDataDir = QDir::cleanPath(configDir.absoluteFilePath("./data"));
+    if (!QDir(cfg.dataDir).exists() && QDir(fallbackDataDir).exists()) {
+        cfg.dataDir = fallbackDataDir;
+    }
+
+    const QFileInfo configuredDbInfo(cfg.dbPath);
+    const QString fallbackDbPath = QDir::cleanPath(configDir.absoluteFilePath("./data/taxi_data.db"));
+    const QFileInfo fallbackDbInfo(fallbackDbPath);
+    const bool configuredDbLooksEmpty = configuredDbInfo.exists() && configuredDbInfo.size() <= 8192;
+    const bool shouldUseFallbackDb =
+        fallbackDbInfo.exists() &&
+        (!configuredDbInfo.exists() || configuredDbLooksEmpty);
+
+    if (shouldUseFallbackDb) {
+        cfg.dbPath = fallbackDbInfo.absoluteFilePath();
+    }
+
     cfg.minLon = settings.value("Filter/min_lon", 115.0).toDouble();
     cfg.maxLon = settings.value("Filter/max_lon", 118.0).toDouble();
     cfg.minLat = settings.value("Filter/min_lat", 39.0).toDouble();
