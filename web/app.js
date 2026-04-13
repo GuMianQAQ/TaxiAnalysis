@@ -8,15 +8,20 @@
     selectionEndPixel: null,
     densityResult: null,
     currentBucketIndex: 0,
-    densityCanvas: null,
-    densityCtx: null,
+    densityOverlay: null,
+    densityChart: null,
+    densityChartContainer: null,
     densityCellMaps: [],
+    densityGridData: [],
+    densityHeatData: [],
     densityPlayTimer: null,
     densityHoverCell: null,
     densitySelectedCellKey: null,
     densityTrendCanvas: null,
     densityTrendCtx: null,
     densityTooltip: null,
+    densityRedrawFrame: null,
+    densityChartRedrawFrame: null,
     trajectoryOverlays: [],
     allTaxiPointCollection: null,
     allTaxiMode: false,
@@ -252,6 +257,44 @@ function loadBaiduMapScript(ak) {
     });
 }
 
+function loadExternalScript(src) {
+    return new Promise((resolve, reject) => {
+        const existing = Array.from(document.scripts).find((script) => script.src === src);
+        if (existing) {
+            if (existing.getAttribute("data-loaded") === "true") {
+                resolve();
+                return;
+            }
+            existing.addEventListener("load", () => resolve(), { once: true });
+            existing.addEventListener("error", () => reject(new Error(`脚本加载失败: ${src}`)), { once: true });
+            return;
+        }
+
+        const script = document.createElement("script");
+        script.src = src;
+        script.async = true;
+        script.onload = () => {
+            script.setAttribute("data-loaded", "true");
+            resolve();
+        };
+        script.onerror = () => reject(new Error(`脚本加载失败: ${src}`));
+        document.head.appendChild(script);
+    });
+}
+
+async function loadExternalScriptFallback(sources) {
+    let lastError = null;
+    for (const src of sources) {
+        try {
+            await loadExternalScript(src);
+            return src;
+        } catch (error) {
+            lastError = error;
+        }
+    }
+    throw lastError || new Error("外部脚本加载失败");
+}
+
 function initMap() {
     const centerPoint = new BMap.Point(state.meta.centerLon, state.meta.centerLat);
     state.map = new BMap.Map("map", { enableMapClick: false });
@@ -272,13 +315,17 @@ function initMap() {
         drawDensityBucket();
         scheduleAllTaxiRefresh();
     };
+    const redrawDensity = () => {
+        requestDensityRedraw();
+    };
 
     state.map.addEventListener("zoomend", refresh);
     state.map.addEventListener("moveend", refresh);
+    state.map.addEventListener("tilesloaded", refresh);
+    state.map.addEventListener("moving", redrawDensity);
     window.addEventListener("resize", () => {
-        syncDensityCanvasSize();
         syncDensityTrendCanvasSize();
-        drawDensityBucket();
+        requestDensityRedraw();
         renderSelectedCellTrend();
     });
 }
@@ -311,12 +358,37 @@ function clearRegionOverlay() {
     }
 }
 
-function clearDensityCanvas() {
-    if (!state.densityCtx) {
-        return;
+function clearDensityOverlay() {
+    // 这里不清空分析结果，只清空当前可视层。
+    // 这样用户切换到轨迹/区域查询时，密度层会暂时隐藏，但数据状态仍可保留，
+    // 便于后续继续切换时间桶或重新进入密度视图时直接重绘。
+    if (state.densityOverlay && typeof state.densityOverlay.clear === "function") {
+        state.densityOverlay.clear();
     }
-    const rect = state.densityCanvas.getBoundingClientRect();
-    state.densityCtx.clearRect(0, 0, rect.width, rect.height);
+}
+
+function clearDensityCanvas() {
+    clearDensityOverlay();
+}
+
+function requestDensityRedraw() {
+    if (state.densityRedrawFrame) {
+        cancelAnimationFrame(state.densityRedrawFrame);
+        state.densityRedrawFrame = null;
+    }
+    state.densityRedrawFrame = requestAnimationFrame(() => {
+        state.densityRedrawFrame = null;
+        if (state.densityOverlay && typeof state.densityOverlay.draw === "function") {
+            state.densityOverlay.draw();
+        }
+    });
+}
+
+function cancelDensityRedraw() {
+    if (state.densityRedrawFrame) {
+        cancelAnimationFrame(state.densityRedrawFrame);
+        state.densityRedrawFrame = null;
+    }
 }
 
 function resetDensityState() {
@@ -329,6 +401,7 @@ function resetDensityState() {
     state.densityCellMaps = [];
     state.densityHoverCell = null;
     state.densitySelectedCellKey = null;
+    cancelDensityRedraw();
     qs("density-bucket").innerHTML = "";
     const timeline = qs("density-timeline");
     if (timeline) {
@@ -344,7 +417,7 @@ function resetDensityState() {
     renderInfoPanel("density-trend-summary", [], "点击网格查看趋势");
     hideDensityTooltip();
     clearDensityTrendCanvas();
-    clearDensityCanvas();
+    clearDensityOverlay();
 }
 
 function createRegionPolygon(region) {
@@ -364,33 +437,408 @@ function createRegionPolygon(region) {
     });
 }
 
+// 密度网格采用 ECharts + bmap 的双层 custom series 绘制。
+// 旧的手写 canvas Overlay 容易出问题，主要原因有三点：
+// 1. 地图缩放/平移后，像素取整与投影误差会被逐格描边不断放大，公共边容易断裂；
+// 2. 单独 canvas 需要自己维护尺寸、DPR 和重绘时机，地图瓦片重排后很容易出现局部空洞；
+// 3. 底图网格与热力填色混在同一层，后续高亮、悬停、选中态都不容易做成稳定分层。
+//
+// 新方案把可视化层交给 ECharts：
+// - 第一层 custom series 负责完整规则网格，只画浅色底格；
+// - 第二层 custom series 负责热力填色，仍然保持规则矩形，不改成模糊云图；
+// - 第三层 custom series 负责选中高亮；
+// - 交互仍然保留在百度地图事件层，避免和显示层互相耦合。
+function DensityGridOverlay() {
+    this._map = null;
+    this._container = null;
+    this._chart = null;
+    this._renderPending = false;
+    this._maskObserver = null;
+}
+
+DensityGridOverlay.prototype.initialize = function initialize(map) {
+    this._map = map;
+    this._container = qs("density-echarts");
+    if (!this._container) {
+        throw new Error("密度图层容器不存在");
+    }
+    if (!window.echarts) {
+        throw new Error("ECharts 未加载");
+    }
+
+    this._chart = echarts.getInstanceByDom(this._container) || echarts.init(this._container, null, {
+        renderer: "canvas",
+        useDirtyRect: true
+    });
+    state.densityChart = this._chart;
+
+    const maskInternalBmap = () => {
+        const nodes = this._container.querySelectorAll(".ec-extension-bmap, .BMap");
+        nodes.forEach((node) => {
+            node.style.opacity = "0";
+            node.style.pointerEvents = "none";
+        });
+    };
+    maskInternalBmap();
+    if (window.MutationObserver) {
+        this._maskObserver = new MutationObserver(maskInternalBmap);
+        this._maskObserver.observe(this._container, {
+            childList: true,
+            subtree: true
+        });
+    }
+
+    this.syncSize();
+    this.render();
+    return this._container;
+};
+
+DensityGridOverlay.prototype.syncSize = function syncSize() {
+    if (!this._chart) {
+        return;
+    }
+    this._chart.resize({
+        silent: true
+    });
+};
+
+DensityGridOverlay.prototype.clear = function clear() {
+    if (!this._chart) {
+        return;
+    }
+    this._chart.clear();
+};
+
+DensityGridOverlay.prototype.destroy = function destroy() {
+    if (this._maskObserver) {
+        this._maskObserver.disconnect();
+        this._maskObserver = null;
+    }
+    if (this._chart) {
+        this._chart.dispose();
+        this._chart = null;
+        state.densityChart = null;
+    }
+};
+
+DensityGridOverlay.prototype.draw = function draw() {
+    if (!this._chart) {
+        return;
+    }
+    this.syncSize();
+    if (this._renderPending) {
+        return;
+    }
+    this._renderPending = true;
+    requestAnimationFrame(() => {
+        this._renderPending = false;
+        this.render();
+    });
+};
+
+function normalizeDensityRect(minLon, minLat, maxLon, maxLat, api) {
+    const topLeft = api.coord([minLon, maxLat]);
+    const bottomRight = api.coord([maxLon, minLat]);
+    const x = Math.min(topLeft[0], bottomRight[0]);
+    const y = Math.min(topLeft[1], bottomRight[1]);
+    const width = Math.abs(bottomRight[0] - topLeft[0]);
+    const height = Math.abs(bottomRight[1] - topLeft[1]);
+    const clipped = echarts.graphic.clipRectByRect({
+        x,
+        y,
+        width,
+        height
+    }, {
+        x: 0,
+        y: 0,
+        width: api.getWidth(),
+        height: api.getHeight()
+    });
+    return clipped;
+}
+
+function buildDensityChartSeriesData(visibleRange) {
+    const result = {
+        baseData: [],
+        heatData: [],
+        selectedData: []
+    };
+
+    if (!state.densityResult || !state.densityResult.buckets || !state.densityResult.buckets.length) {
+        return result;
+    }
+
+    const minLon = Number(state.densityResult.minLon);
+    const minLat = Number(state.densityResult.minLat);
+    const maxLon = Number(state.densityResult.maxLon);
+    const maxLat = Number(state.densityResult.maxLat);
+    const lonStep = Number(state.densityResult.lonStep);
+    const latStep = Number(state.densityResult.latStep);
+    const columnCount = Number(state.densityResult.columnCount || 0);
+    const rowCount = Number(state.densityResult.rowCount || 0);
+
+    if (!Number.isFinite(minLon) || !Number.isFinite(minLat) ||
+        !Number.isFinite(maxLon) || !Number.isFinite(maxLat) ||
+        !Number.isFinite(lonStep) || !Number.isFinite(latStep) ||
+        lonStep <= 0 || latStep <= 0 || columnCount <= 0 || rowCount <= 0) {
+        return result;
+    }
+
+    const bucket = getCurrentBucket();
+    if (!bucket) {
+        return result;
+    }
+
+    const range = visibleRange || {
+        minGx: 0,
+        maxGx: columnCount - 1,
+        minGy: 0,
+        maxGy: rowCount - 1
+    };
+
+    // 第一层：完整规则网格底图。只要当前视野覆盖到，就把分析区域内的单元格都生成出来，
+    // 保证网格结构稳定，不依赖 bucket.cells 是否存在数据。
+    for (let gy = range.minGy; gy <= range.maxGy; gy += 1) {
+        for (let gx = range.minGx; gx <= range.maxGx; gx += 1) {
+            const cell = { gx, gy };
+            const bounds = getDensityCellBounds(cell);
+            if (!bounds) {
+                continue;
+            }
+            result.baseData.push([
+                bounds.minLon,
+                bounds.minLat,
+                bounds.maxLon,
+                bounds.maxLat,
+                gx,
+                gy
+            ]);
+        }
+    }
+
+    // 第二层：只把当前时间桶里有数据的网格转换成热力填色数据。
+    for (const cell of bucket.cells || []) {
+        const gx = Number(cell.gx || 0);
+        const gy = Number(cell.gy || 0);
+        if (gx < range.minGx || gx > range.maxGx || gy < range.minGy || gy > range.maxGy) {
+            continue;
+        }
+        const bounds = getDensityCellBounds(cell);
+        if (!bounds) {
+            continue;
+        }
+        result.heatData.push([
+            bounds.minLon,
+            bounds.minLat,
+            bounds.maxLon,
+            bounds.maxLat,
+            Number(cell.vehicleDensity || 0),
+            gx,
+            gy,
+            Number(cell.vehicleCount || 0)
+        ]);
+    }
+
+    // 第三层：选中格子单独高亮。即便该格子当前没有密度值，也要能稳定显示边框。
+    if (state.densitySelectedCellKey) {
+        const selected = getDensityCellByKey(state.currentBucketIndex, state.densitySelectedCellKey);
+        if (selected) {
+            const bounds = getDensityCellBounds(selected);
+            if (bounds) {
+                result.selectedData.push([
+                    bounds.minLon,
+                    bounds.minLat,
+                    bounds.maxLon,
+                    bounds.maxLat,
+                    selected.gx,
+                    selected.gy
+                ]);
+            }
+        }
+    }
+
+    return result;
+}
+
+function buildDensityChartOption() {
+    if (!state.densityResult || !state.densityResult.buckets || !state.densityResult.buckets.length) {
+        return null;
+    }
+
+    const bucket = getCurrentBucket();
+    if (!bucket) {
+        return null;
+    }
+
+    const center = state.map && typeof state.map.getCenter === "function" ? state.map.getCenter() : null;
+    const zoom = state.map && typeof state.map.getZoom === "function" ? state.map.getZoom() : undefined;
+    const visibleRange = getVisibleDensityGridRange();
+    const { baseData, heatData, selectedData } = buildDensityChartSeriesData(visibleRange);
+    const maxDensity = Math.max(1, Number(state.densityResult.maxVehicleDensity || 0));
+    const lowColor = "#a6def0";
+    const midColor = "#f2bc58";
+    const highColor = "#de5750";
+
+    const makeRectShape = (api) => {
+        const minLon = Number(api.value(0));
+        const minLat = Number(api.value(1));
+        const maxLon = Number(api.value(2));
+        const maxLat = Number(api.value(3));
+        if (!Number.isFinite(minLon) || !Number.isFinite(minLat) || !Number.isFinite(maxLon) || !Number.isFinite(maxLat)) {
+            return null;
+        }
+        return normalizeDensityRect(minLon, minLat, maxLon, maxLat, api);
+    };
+
+    return {
+        backgroundColor: "transparent",
+        animation: false,
+        useDirtyRect: true,
+        bmap: {
+            center: center ? [center.lng, center.lat] : [state.meta.centerLon, state.meta.centerLat],
+            zoom: Number.isFinite(zoom) ? zoom : state.meta.initialZoom,
+            roam: false,
+            mapStyle: {
+                style: "light"
+            }
+        },
+        visualMap: [{
+            show: false,
+            type: "continuous",
+            dimension: 4,
+            seriesIndex: 1,
+            min: 0,
+            max: maxDensity,
+            inRange: {
+                color: [lowColor, midColor, highColor]
+            }
+        }],
+        series: [
+            {
+                name: "density-grid-base",
+                type: "custom",
+                coordinateSystem: "bmap",
+                silent: true,
+                z: 2,
+                data: baseData,
+                renderItem: (params, api) => {
+                    const shape = makeRectShape(api);
+                    if (!shape) {
+                        return null;
+                    }
+                    return {
+                        type: "rect",
+                        shape,
+                        style: {
+                            fill: "rgba(255, 255, 255, 0.14)",
+                            stroke: "rgba(136, 163, 183, 0.28)",
+                            lineWidth: 1,
+                            opacity: 1
+                        }
+                    };
+                }
+            },
+            {
+                name: "density-grid-heat",
+                type: "custom",
+                coordinateSystem: "bmap",
+                silent: true,
+                z: 3,
+                data: heatData,
+                encode: {
+                    value: 4
+                },
+                renderItem: (params, api) => {
+                    const shape = makeRectShape(api);
+                    if (!shape) {
+                        return null;
+                    }
+                    const density = Number(api.value(4) || 0);
+                    const ratio = Math.max(0, Math.min(1, density / maxDensity));
+                    const fillColor = api.visual("color") || lowColor;
+                    return {
+                        type: "rect",
+                        shape,
+                        style: {
+                            fill: fillColor,
+                            opacity: 0.16 + ratio * 0.6,
+                            stroke: "transparent",
+                            lineWidth: 0
+                        }
+                    };
+                }
+            },
+            {
+                name: "density-grid-selected",
+                type: "custom",
+                coordinateSystem: "bmap",
+                silent: true,
+                z: 4,
+                data: selectedData,
+                renderItem: (params, api) => {
+                    const shape = makeRectShape(api);
+                    if (!shape) {
+                        return null;
+                    }
+                    return {
+                        type: "rect",
+                        shape,
+                        style: {
+                            fill: "rgba(47, 185, 177, 0.06)",
+                            stroke: "rgba(19, 52, 71, 0.96)",
+                            lineWidth: 2,
+                            opacity: 1
+                        }
+                    };
+                }
+            }
+        ]
+    };
+}
+
+DensityGridOverlay.prototype.render = function render() {
+    if (!this._chart) {
+        return;
+    }
+
+    if (!state.densityResult || !state.densityResult.buckets || !state.densityResult.buckets.length) {
+        this._chart.clear();
+        return;
+    }
+
+    const option = buildDensityChartOption();
+    if (!option) {
+        this._chart.clear();
+        return;
+    }
+
+    this._chart.setOption(option, {
+        notMerge: true,
+        lazyUpdate: false
+    });
+};
+
 function renderRegion(region) {
     clearRegionOverlay();
     state.regionPolygon = createRegionPolygon(region);
     state.map.addOverlay(state.regionPolygon);
 }
 
-function ensureDensityCanvas() {
-    state.densityCanvas = qs("density-canvas");
-    state.densityCtx = state.densityCanvas.getContext("2d");
+function ensureDensityOverlay() {
+    state.densityChartContainer = qs("density-echarts");
     state.densityTrendCanvas = qs("density-trend-canvas");
     state.densityTrendCtx = state.densityTrendCanvas.getContext("2d");
     state.densityTooltip = qs("density-tooltip");
-    syncDensityTrendCanvasSize();
-    syncDensityCanvasSize();
-}
-
-function syncDensityCanvasSize() {
-    if (!state.densityCanvas || !state.densityCtx) {
-        return;
+    if (!state.densityOverlay) {
+        try {
+            state.densityOverlay = new DensityGridOverlay();
+            state.densityOverlay.initialize(state.map);
+        } catch (error) {
+            console.warn("density overlay init failed:", error);
+            state.densityOverlay = null;
+        }
     }
-
-    const rect = state.densityCanvas.getBoundingClientRect();
-    const dpr = window.devicePixelRatio || 1;
-    state.densityCanvas.width = Math.max(1, Math.round(rect.width * dpr));
-    state.densityCanvas.height = Math.max(1, Math.round(rect.height * dpr));
-    state.densityCtx.setTransform(1, 0, 0, 1, 0, 0);
-    state.densityCtx.scale(dpr, dpr);
+    syncDensityTrendCanvasSize();
 }
 
 function syncDensityTrendCanvasSize() {
@@ -405,51 +853,57 @@ function syncDensityTrendCanvasSize() {
     state.densityTrendCtx.scale(dpr, dpr);
 }
 
-function pointToPixel(lon, lat) {
-    return state.map.pointToPixel(new BMap.Point(lon, lat));
-}
-
-// 将地图点统一换算为当前 density canvas 所在容器坐标。
-// 说明：
-// - BMap 在不同 API 下可能返回不同参考系（容器像素 / 覆盖物像素）。
-// - 这里以“容器像素”为目标坐标，并用中心点做一次偏移校准，
-//   保证网格绘制、点击高亮、tooltip 定位使用同一坐标系。
-function pointToCanvasPixel(lon, lat) {
+function pointToOverlayPixel(lon, lat) {
     const point = new BMap.Point(lon, lat);
-    const pixel = state.map.pointToPixel(point);
-
-    if (typeof state.map.pointToOverlayPixel !== "function") {
-        return pixel;
+    if (state.map && typeof state.map.pointToOverlayPixel === "function") {
+        return state.map.pointToOverlayPixel(point);
     }
-
-    const overlayPixel = state.map.pointToOverlayPixel(point);
-    const center = state.map.getCenter();
-    const centerPixel = state.map.pointToPixel(center);
-    const centerOverlayPixel = state.map.pointToOverlayPixel(center);
-    const offsetX = centerOverlayPixel.x - centerPixel.x;
-    const offsetY = centerOverlayPixel.y - centerPixel.y;
-
-    return {
-        x: overlayPixel.x - offsetX,
-        y: overlayPixel.y - offsetY
-    };
+    return state.map.pointToPixel(point);
 }
 
 function pixelToPoint(x, y) {
     return state.map.pixelToPoint(new BMap.Pixel(x, y));
 }
 
-function isCellVisibleInCanvas(left, top, width, height, canvasWidth, canvasHeight) {
-    if (width <= 0 || height <= 0) {
-        return false;
+function parseDensityCellKey(key) {
+    const parts = String(key || "").split(":");
+    if (parts.length !== 2) {
+        return null;
     }
-    if (left >= canvasWidth || top >= canvasHeight) {
-        return false;
+
+    const gx = Number(parts[0]);
+    const gy = Number(parts[1]);
+    if (!Number.isInteger(gx) || !Number.isInteger(gy)) {
+        return null;
     }
-    if (left + width <= 0 || top + height <= 0) {
-        return false;
+    return { gx, gy };
+}
+
+function getDensityCellByKey(bucketIndex, key) {
+    const bucket = state.densityCellMaps[bucketIndex];
+    const keyText = String(key || "");
+    const cached = bucket?.get(keyText);
+    if (cached) {
+        return cached;
     }
-    return true;
+
+    const grid = parseDensityCellKey(keyText);
+    if (!grid) {
+        return null;
+    }
+
+    // 空格子也需要能被命中和高亮，方便“完整网格 + 热力填色”的交互保持一致。
+    return {
+        gx: grid.gx,
+        gy: grid.gy,
+        pointCount: 0,
+        vehicleCount: 0,
+        vehicleDensity: 0,
+        flowIntensity: 0,
+        deltaVehicleCount: 0,
+        deltaVehicleDensity: 0,
+        deltaRate: 0
+    };
 }
 
 // 根据网格索引反推网格经纬度边界。
@@ -497,67 +951,172 @@ function getDensityCellBounds(cell) {
     };
 }
 
-function drawDensityBucket() {
-    clearDensityCanvas();
-    if (!state.densityResult || !state.densityResult.buckets || !state.densityResult.buckets.length || !state.map) {
+// 下面这些函数保留为旧版 canvas 绘制的排查辅助，不再走主渲染路径。
+// 当前页面真正使用的是 ECharts custom series + bmap 的分层方案。
+function drawDensityGridBase(ctx, visibleRange) {
+    if (!state.densityResult) {
         return;
     }
 
-    const bucket = state.densityResult.buckets[state.currentBucketIndex];
-    if (!bucket) {
+    const minLon = Number(state.densityResult.minLon);
+    const minLat = Number(state.densityResult.minLat);
+    const maxLon = Number(state.densityResult.maxLon);
+    const maxLat = Number(state.densityResult.maxLat);
+    const lonStep = Number(state.densityResult.lonStep);
+    const latStep = Number(state.densityResult.latStep);
+    const columnCount = Number(state.densityResult.columnCount || 0);
+    const rowCount = Number(state.densityResult.rowCount || 0);
+
+    if (!Number.isFinite(minLon) || !Number.isFinite(minLat) ||
+        !Number.isFinite(maxLon) || !Number.isFinite(maxLat) ||
+        !Number.isFinite(lonStep) || !Number.isFinite(latStep) ||
+        lonStep <= 0 || latStep <= 0 || columnCount <= 0 || rowCount <= 0) {
         return;
     }
 
-    const canvasRect = state.densityCanvas.getBoundingClientRect();
-    const canvasWidth = canvasRect.width;
-    const canvasHeight = canvasRect.height;
+    const range = visibleRange || {
+        minGx: 0,
+        maxGx: columnCount - 1,
+        minGy: 0,
+        maxGy: rowCount - 1
+    };
 
-    // 先绘制填充，再在可辨识网格上补边框，避免密集场景下边框噪声过重。
-    for (const cell of bucket.cells) {
+    ctx.save();
+    ctx.strokeStyle = "rgba(136, 163, 183, 0.30)";
+    ctx.lineWidth = 1;
+
+    // 竖向网格线：按经度边界一次性连成路径，避免每格描边时公共边重复绘制。
+    ctx.beginPath();
+    for (let gx = range.minGx; gx <= range.maxGx + 1; gx += 1) {
+        const lon = Math.min(maxLon, minLon + gx * lonStep);
+        const topPixel = pointToOverlayPixel(lon, maxLat);
+        const bottomPixel = pointToOverlayPixel(lon, minLat);
+        const x = Math.round((topPixel.x + bottomPixel.x) * 0.5) + 0.5;
+        const y1 = Math.min(topPixel.y, bottomPixel.y);
+        const y2 = Math.max(topPixel.y, bottomPixel.y);
+        ctx.moveTo(x, y1);
+        ctx.lineTo(x, y2);
+    }
+    ctx.stroke();
+
+    // 横向网格线：按纬度边界一次性连成路径。
+    ctx.beginPath();
+    for (let gy = range.minGy; gy <= range.maxGy + 1; gy += 1) {
+        const lat = Math.min(maxLat, minLat + gy * latStep);
+        const leftPixel = pointToOverlayPixel(minLon, lat);
+        const rightPixel = pointToOverlayPixel(maxLon, lat);
+        const y = Math.round((leftPixel.y + rightPixel.y) * 0.5) + 0.5;
+        const x1 = Math.min(leftPixel.x, rightPixel.x);
+        const x2 = Math.max(leftPixel.x, rightPixel.x);
+        ctx.moveTo(x1, y);
+        ctx.lineTo(x2, y);
+    }
+    ctx.stroke();
+
+    ctx.restore();
+}
+
+function drawDensityHeatCells(ctx, cells, visibleRange) {
+    if (!cells || cells.length === 0) {
+        return;
+    }
+
+    ctx.save();
+    ctx.globalCompositeOperation = "source-over";
+    ctx.lineJoin = "miter";
+    ctx.lineCap = "square";
+
+    for (const cell of cells) {
+        if (visibleRange) {
+            const gx = Number(cell.gx || 0);
+            const gy = Number(cell.gy || 0);
+            if (gx < visibleRange.minGx || gx > visibleRange.maxGx || gy < visibleRange.minGy || gy > visibleRange.maxGy) {
+                continue;
+            }
+        }
+
         const bounds = getDensityCellBounds(cell);
         if (!bounds) {
             continue;
         }
-        const topLeft = pointToCanvasPixel(bounds.minLon, bounds.maxLat);
-        const bottomRight = pointToCanvasPixel(bounds.maxLon, bounds.minLat);
-        const left = Math.min(topLeft.x, bottomRight.x);
-        const top = Math.min(topLeft.y, bottomRight.y);
-        const width = Math.abs(bottomRight.x - topLeft.x);
-        const height = Math.abs(bottomRight.y - topLeft.y);
 
-        if (!isCellVisibleInCanvas(left, top, width, height, canvasWidth, canvasHeight)) {
-            continue;
-        }
+        const topLeft = pointToOverlayPixel(bounds.minLon, bounds.maxLat);
+        const bottomRight = pointToOverlayPixel(bounds.maxLon, bounds.minLat);
+        const centerX = (topLeft.x + bottomRight.x) * 0.5;
+        const centerY = (topLeft.y + bottomRight.y) * 0.5;
+        const rawWidth = Math.abs(bottomRight.x - topLeft.x);
+        const rawHeight = Math.abs(bottomRight.y - topLeft.y);
+
+        // 热力填色采用最小可见尺寸，而不是直接跳过细网格。
+        // 这样在缩放较远时，仍然能看见网格结构，不会出现“空白断层”。
+        const drawWidth = Math.max(1, rawWidth);
+        const drawHeight = Math.max(1, rawHeight);
+        const left = Math.round(centerX - drawWidth * 0.5);
+        const top = Math.round(centerY - drawHeight * 0.5);
 
         const ratio = getDensityRatio(cell);
-        const fillColor = getHeatColor(ratio);
-        state.densityCtx.fillStyle = fillColor;
-        state.densityCtx.fillRect(left, top, width, height);
-        // 网格足够大时才绘制边框，避免缩放较小时出现“灰网”噪点。
-        if (width >= 6 && height >= 6) {
-            state.densityCtx.strokeStyle = ratio > 0.72 ? "rgba(214, 71, 64, 0.55)" : "rgba(105, 142, 166, 0.26)";
-            state.densityCtx.lineWidth = 1;
-            state.densityCtx.strokeRect(left + 0.5, top + 0.5, Math.max(0, width - 1), Math.max(0, height - 1));
-        }
+        const cellColor = getHeatColor(ratio);
+        ctx.fillStyle = cellColor;
+        ctx.fillRect(left, top, drawWidth, drawHeight);
     }
 
-    if (state.densitySelectedCellKey) {
-        const selected = state.densityCellMaps[state.currentBucketIndex]?.get(state.densitySelectedCellKey);
-        if (selected) {
-            const bounds = getDensityCellBounds(selected);
-            if (bounds) {
-                const topLeft = pointToCanvasPixel(bounds.minLon, bounds.maxLat);
-                const bottomRight = pointToCanvasPixel(bounds.maxLon, bounds.minLat);
-                const left = Math.min(topLeft.x, bottomRight.x);
-                const top = Math.min(topLeft.y, bottomRight.y);
-                const width = Math.abs(bottomRight.x - topLeft.x);
-                const height = Math.abs(bottomRight.y - topLeft.y);
-                state.densityCtx.strokeStyle = "rgba(19, 52, 71, 0.92)";
-                state.densityCtx.lineWidth = 2;
-                state.densityCtx.strokeRect(left + 0.5, top + 0.5, Math.max(0, width - 1), Math.max(0, height - 1));
-            }
-        }
+    ctx.restore();
+}
+
+function getVisibleDensityGridRange() {
+    if (!state.densityResult || !state.map || typeof state.map.getBounds !== "function") {
+        return null;
     }
+
+    const bounds = state.map.getBounds();
+    if (!bounds || typeof bounds.getSouthWest !== "function" || typeof bounds.getNorthEast !== "function") {
+        return null;
+    }
+
+    const sw = bounds.getSouthWest();
+    const ne = bounds.getNorthEast();
+    const minLon = Number(state.densityResult.minLon);
+    const minLat = Number(state.densityResult.minLat);
+    const maxLon = Number(state.densityResult.maxLon);
+    const maxLat = Number(state.densityResult.maxLat);
+    const lonStep = Number(state.densityResult.lonStep);
+    const latStep = Number(state.densityResult.latStep);
+    const columnCount = Number(state.densityResult.columnCount || 0);
+    const rowCount = Number(state.densityResult.rowCount || 0);
+
+    if (!Number.isFinite(minLon) || !Number.isFinite(minLat) ||
+        !Number.isFinite(maxLon) || !Number.isFinite(maxLat) ||
+        !Number.isFinite(lonStep) || !Number.isFinite(latStep) ||
+        lonStep <= 0 || latStep <= 0 || columnCount <= 0 || rowCount <= 0) {
+        return null;
+    }
+
+    const viewMinLon = Math.max(minLon, sw.lng);
+    const viewMaxLon = Math.min(maxLon, ne.lng);
+    const viewMinLat = Math.max(minLat, sw.lat);
+    const viewMaxLat = Math.min(maxLat, ne.lat);
+    if (viewMinLon >= viewMaxLon || viewMinLat >= viewMaxLat) {
+        return null;
+    }
+
+    const minGx = Math.max(0, Math.floor((viewMinLon - minLon) / lonStep - 1e-9));
+    const maxGx = Math.min(columnCount - 1, Math.ceil((viewMaxLon - minLon) / lonStep + 1e-9) - 1);
+    const minGy = Math.max(0, Math.floor((viewMinLat - minLat) / latStep - 1e-9));
+    const maxGy = Math.min(rowCount - 1, Math.ceil((viewMaxLat - minLat) / latStep + 1e-9) - 1);
+    if (maxGx < minGx || maxGy < minGy) {
+        return null;
+    }
+
+    return {
+        minGx: Math.max(0, minGx - 1),
+        maxGx: Math.min(columnCount - 1, maxGx + 1),
+        minGy: Math.max(0, minGy - 1),
+        maxGy: Math.min(rowCount - 1, maxGy + 1)
+    };
+}
+
+function drawDensityBucket() {
+    requestDensityRedraw();
 }
 
 function getDensityRatio(cell) {
@@ -701,7 +1260,7 @@ function setDensityBucketIndex(index) {
     updateDensityTimeLabel();
     drawDensityBucket();
     if (state.densitySelectedCellKey) {
-        const selected = state.densityCellMaps[state.currentBucketIndex]?.get(state.densitySelectedCellKey);
+        const selected = getDensityCellByKey(state.currentBucketIndex, state.densitySelectedCellKey);
         updateTrendSummary(state.densitySelectedCellKey, selected || null);
         renderSelectedCellTrend();
     }
@@ -1066,7 +1625,7 @@ async function runTrajectoryQuery() {
     }
 
     stopAllTaxiMode(true);
-    clearDensityCanvas();
+    clearDensityOverlay();
 
     const data = await requestJson("/api/trajectory", {
         method: "POST",
@@ -1154,7 +1713,7 @@ function tryGetCellByPoint(point) {
     ));
 
     const key = `${gx}:${gy}`;
-    const cell = state.densityCellMaps[state.currentBucketIndex]?.get(key);
+    const cell = getDensityCellByKey(state.currentBucketIndex, key);
     return cell ? { key, cell } : null;
 }
 
@@ -1195,7 +1754,7 @@ function installDensityMapInteractions() {
             `<div><strong>车辆数:</strong> ${escapeHtml(formatCount(hit.cell.vehicleCount))}</div>`,
             `<div><strong>密度:</strong> ${escapeHtml(Number(hit.cell.vehicleDensity || 0).toFixed(2))}</div>`
         ].join("");
-        const pixel = pointToCanvasPixel(event.point.lng, event.point.lat);
+        const pixel = pointToOverlayPixel(event.point.lng, event.point.lat);
         showDensityTooltip(html, pixel.x, pixel.y);
     });
 
@@ -1242,7 +1801,7 @@ function startDensityPlayback() {
         const next = (state.currentBucketIndex + 1) % state.densityResult.buckets.length;
         setDensityBucketIndex(next);
         if (state.densitySelectedCellKey) {
-            const selected = state.densityCellMaps[state.currentBucketIndex]?.get(state.densitySelectedCellKey);
+            const selected = getDensityCellByKey(state.currentBucketIndex, state.densitySelectedCellKey);
             updateTrendSummary(state.densitySelectedCellKey, selected || null);
             renderSelectedCellTrend();
         }
@@ -1431,8 +1990,16 @@ async function bootstrap() {
     try {
         state.meta = await requestJson("/api/meta");
         await loadBaiduMapScript(state.meta.baiduMapAk);
+        await loadExternalScriptFallback([
+            "https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js",
+            "https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.js"
+        ]);
+        await loadExternalScriptFallback([
+            "https://cdn.jsdelivr.net/npm/echarts@5/dist/extension/bmap.min.js",
+            "https://cdn.jsdelivr.net/npm/echarts@5/dist/extension/bmap.js"
+        ]);
         initMap();
-        ensureDensityCanvas();
+        ensureDensityOverlay();
         installDensityMapInteractions();
         installRegionSelection();
         bindEvents();
