@@ -30,10 +30,12 @@
     densityTooltip: null,
     densityRedrawFrame: null,
     trajectoryOverlays: [],
+    allTaxiDotOverlay: null,
     allTaxiPointCollection: null,
     allTaxiMode: false,
     allTaxiRequestSeq: 0,
     allTaxiRefreshTimer: null,
+    allTaxiBoundsRetryTimer: null,
     currentAllTaxiPointCount: 0,
     currentAllTaxiRenderMode: "cluster",
     selectionLayer: null,
@@ -46,6 +48,13 @@ const DENSITY_CHUNK_CACHE_LIMIT = 96;
 const DENSITY_CHUNK_PREFETCH_MARGIN = 1;
 
 const API_BASE = location.protocol === "file:" ? "http://127.0.0.1:8080" : "";
+
+const REGION_MAP_INTERACTIONS = [
+    ["disableDragging", "enableDragging"],
+    ["disableScrollWheelZoom", "enableScrollWheelZoom"],
+    ["disableDoubleClickZoom", "enableDoubleClickZoom"],
+    ["disableKeyboard", "enableKeyboard"]
+];
 
 function qs(id) {
     return document.getElementById(id);
@@ -112,7 +121,18 @@ async function requestJson(url, options = {}) {
         headers: { "Content-Type": "application/json" },
         ...options
     });
-    const payload = await response.json();
+    const text = await response.text();
+    if (!text) {
+        throw new Error(`请求失败：${response.status} ${response.statusText}`);
+    }
+
+    let payload;
+    try {
+        payload = JSON.parse(text);
+    } catch (error) {
+        throw new Error(`响应不是有效 JSON：${response.status} ${response.statusText}`);
+    }
+
     if (!payload.success) {
         throw new Error(payload.error?.message || "请求失败");
     }
@@ -294,7 +314,9 @@ function initMap() {
 
     const refresh = () => {
         drawDensityBucket();
-        scheduleAllTaxiRefresh();
+        if (state.openDockPanel === "query" || state.activeDockPanel === "query") {
+            scheduleAllTaxiRefresh();
+        }
     };
 
     state.map.addEventListener("zoomend", refresh);
@@ -320,6 +342,13 @@ function clearTrajectoryOverlays() {
         state.map.removeOverlay(state.allTaxiPointCollection);
         state.allTaxiPointCollection = null;
     }
+
+    if (state.allTaxiDotOverlay) {
+        if (typeof state.allTaxiDotOverlay.destroy === "function") {
+            state.allTaxiDotOverlay.destroy();
+        }
+        state.allTaxiDotOverlay = null;
+    }
 }
 
 function addTrajectoryOverlay(overlay) {
@@ -334,6 +363,19 @@ function clearRegionOverlay() {
     }
 }
 
+function setRegionSelectionMapLocked(locked) {
+    if (!state.map) {
+        return;
+    }
+
+    for (const [disableMethod, enableMethod] of REGION_MAP_INTERACTIONS) {
+        const method = locked ? disableMethod : enableMethod;
+        if (typeof state.map[method] === "function") {
+            state.map[method]();
+        }
+    }
+}
+
 function clearDensityOverlay() {
     // 这里不清空分析结果，只清空当前覆盖物的可视内容。
     // 这样用户切换到轨迹/区域查询时，密度层会暂时隐藏，但数据状态仍可保留，
@@ -345,6 +387,54 @@ function clearDensityOverlay() {
 
 function clearDensityCanvas() {
     clearDensityOverlay();
+}
+
+function clearAllTaxiDotOverlay() {
+    if (!state.allTaxiDotOverlay || !state.map) {
+        return;
+    }
+    if (typeof state.allTaxiDotOverlay.destroy === "function") {
+        state.allTaxiDotOverlay.destroy();
+    }
+    state.allTaxiDotOverlay = null;
+}
+
+function readValidMapBounds() {
+    const bounds = state.map?.getBounds?.();
+    if (!bounds || typeof bounds.getSouthWest !== "function" || typeof bounds.getNorthEast !== "function") {
+        return null;
+    }
+
+    const sw = bounds.getSouthWest();
+    const ne = bounds.getNorthEast();
+    if (!sw || !ne) {
+        return null;
+    }
+
+    const minLon = Number(sw.lng);
+    const minLat = Number(sw.lat);
+    const maxLon = Number(ne.lng);
+    const maxLat = Number(ne.lat);
+    if (![minLon, minLat, maxLon, maxLat].every(Number.isFinite)) {
+        return null;
+    }
+    if (minLon >= maxLon || minLat >= maxLat) {
+        return null;
+    }
+
+    return { minLon, minLat, maxLon, maxLat };
+}
+
+function redrawAllTaxiOverlay() {
+    if (state.allTaxiDotOverlay && typeof state.allTaxiDotOverlay.draw === "function") {
+        state.allTaxiDotOverlay.draw();
+        return;
+    }
+    if (state.allTaxiPointCollection && typeof state.allTaxiPointCollection.setStyle === "function") {
+        state.allTaxiPointCollection.setStyle({
+            color: "#1f78ff"
+        });
+    }
 }
 
 function requestDensityRedraw() {
@@ -575,6 +665,157 @@ DensityGridOverlay.prototype.render = function render() {
     }
 
     this._ctx.restore();
+};
+
+function TaxiDotOverlay(points) {
+    this._points = Array.isArray(points) ? points : [];
+    this._map = null;
+    this._container = null;
+    this._canvas = null;
+    this._ctx = null;
+    this._cssWidth = 0;
+    this._cssHeight = 0;
+    this._dpr = 1;
+}
+
+TaxiDotOverlay.prototype.attach = function attach(map) {
+    this._map = map;
+
+    const container = document.createElement("div");
+    container.className = "taxi-dot-overlay-layer";
+    container.style.position = "absolute";
+    container.style.left = "0";
+    container.style.top = "0";
+    container.style.right = "0";
+    container.style.bottom = "0";
+    container.style.zIndex = "7";
+    container.style.pointerEvents = "none";
+
+    const canvas = document.createElement("canvas");
+    canvas.className = "taxi-dot-overlay-canvas";
+    canvas.style.display = "block";
+    canvas.style.width = "100%";
+    canvas.style.height = "100%";
+    container.appendChild(canvas);
+
+    const hostContainer = typeof map.getContainer === "function" ? map.getContainer() : null;
+    if (!hostContainer) {
+        throw new Error("百度地图容器未就绪");
+    }
+    const parentStyle = hostContainer.style;
+    if (parentStyle.position === "") {
+        parentStyle.position = "relative";
+    }
+    hostContainer.appendChild(container);
+
+    this._container = container;
+    this._canvas = canvas;
+    this._ctx = canvas.getContext("2d");
+    this.syncSize();
+    this.draw();
+    return container;
+};
+
+TaxiDotOverlay.prototype.setPoints = function setPoints(points) {
+    this._points = Array.isArray(points) ? points : [];
+    this.draw();
+};
+
+TaxiDotOverlay.prototype.syncSize = function syncSize() {
+    if (!this._map || !this._container || !this._canvas || !this._ctx) {
+        return;
+    }
+
+    const size = this._map.getSize();
+    if (!size) {
+        return;
+    }
+
+    const cssWidth = Math.max(1, Math.round(size.width || 0));
+    const cssHeight = Math.max(1, Math.round(size.height || 0));
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    const pixelWidth = Math.max(1, Math.round(cssWidth * dpr));
+    const pixelHeight = Math.max(1, Math.round(cssHeight * dpr));
+
+    this._container.style.width = `${cssWidth}px`;
+    this._container.style.height = `${cssHeight}px`;
+    this._canvas.style.width = `${cssWidth}px`;
+    this._canvas.style.height = `${cssHeight}px`;
+
+    if (this._canvas.width !== pixelWidth) {
+        this._canvas.width = pixelWidth;
+    }
+    if (this._canvas.height !== pixelHeight) {
+        this._canvas.height = pixelHeight;
+    }
+
+    this._cssWidth = cssWidth;
+    this._cssHeight = cssHeight;
+    this._dpr = dpr;
+
+    this._ctx.setTransform(1, 0, 0, 1, 0, 0);
+    this._ctx.clearRect(0, 0, this._canvas.width, this._canvas.height);
+    this._ctx.scale(dpr, dpr);
+};
+
+TaxiDotOverlay.prototype.clear = function clear() {
+    if (!this._ctx || !this._canvas) {
+        return;
+    }
+    this._ctx.setTransform(1, 0, 0, 1, 0, 0);
+    this._ctx.clearRect(0, 0, this._canvas.width, this._canvas.height);
+    this._ctx.scale(this._dpr || 1, this._dpr || 1);
+};
+
+TaxiDotOverlay.prototype.destroy = function destroy() {
+    this.clear();
+    if (this._container && this._container.parentNode) {
+        this._container.parentNode.removeChild(this._container);
+    }
+    this._container = null;
+    this._canvas = null;
+    this._ctx = null;
+    this._map = null;
+};
+
+TaxiDotOverlay.prototype.draw = function draw() {
+    this.syncSize();
+    this.render();
+};
+
+TaxiDotOverlay.prototype.render = function render() {
+    if (!this._map || !this._ctx) {
+        return;
+    }
+
+    this.clear();
+    if (!Array.isArray(this._points) || this._points.length === 0) {
+        return;
+    }
+
+    const ctx = this._ctx;
+    ctx.save();
+    ctx.globalCompositeOperation = "source-over";
+    ctx.fillStyle = "#1f78ff";
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 1;
+
+    for (const point of this._points) {
+        const pixel = pointToOverlayPixel(point.lng, point.lat);
+        if (!pixel) {
+            continue;
+        }
+        const x = pixel.x;
+        const y = pixel.y;
+        if (x < -6 || y < -6 || x > this._cssWidth + 6 || y > this._cssHeight + 6) {
+            continue;
+        }
+        ctx.beginPath();
+        ctx.arc(x, y, 2.1, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    ctx.restore();
 };
 
 function renderRegion(region) {
@@ -1798,6 +2039,8 @@ function startRegionSelection() {
     resetDensityState();
     hideSelectionBox();
     clearRegionOverlay();
+    setRegionSelectionMapLocked(true);
+    getSelectionLayer().classList.add("active");
     state.selectingRegion = true;
     state.selectionStartPixel = null;
     state.selectionEndPixel = null;
@@ -1809,6 +2052,8 @@ function cancelRegionSelection() {
     state.selectionStartPixel = null;
     state.selectionEndPixel = null;
     hideSelectionBox();
+    getSelectionLayer().classList.remove("active");
+    setRegionSelectionMapLocked(false);
 }
 
 function getSelectionLayer() {
@@ -1923,36 +2168,44 @@ function installRegionSelection() {
 
 async function runTrajectoryQuery() {
     stopAllTaxiMode(true);
-    ensureRegion();
-    const taxiId = qs("trajectory-taxi-id").value.trim();
-    const { startTime, endTime } = ensureTimeRange(qs("region-start").value, qs("region-end").value);
+    const taxiInput = qs("trajectory-id");
+    if (!taxiInput) {
+        throw new Error("轨迹查询输入框未找到");
+    }
+    const taxiIdText = taxiInput.value.trim();
 
-    if (!taxiId) {
+    if (!taxiIdText) {
         throw new Error("请输入出租车 ID");
+    }
+
+    const taxiId = Number(taxiIdText);
+    if (!Number.isFinite(taxiId) || taxiId < 0) {
+        throw new Error("请输入有效的出租车 ID");
+    }
+
+    if (taxiId === 0) {
+        await runAllTaxiQuery(true);
+        return;
     }
 
     const data = await requestJson("/api/trajectory", {
         method: "POST",
-        body: JSON.stringify({
-            taxiId,
-            startTime,
-            endTime,
-            minLon: state.region.minLon,
-            minLat: state.region.minLat,
-            maxLon: state.region.maxLon,
-            maxLat: state.region.maxLat
-        })
+        body: JSON.stringify({ taxiId })
     });
 
+    renderSingleTrajectoryResult(data);
+}
+
+function renderSingleTrajectoryResult(data) {
     clearTrajectoryOverlays();
     resetDensityState();
-    renderRegion(state.region);
+    clearRegionOverlay();
 
-    const color = "#13b4b0";
-    const path = data.points.map((point) => new BMap.Point(point.lon, point.lat));
+    const points = Array.isArray(data?.points) ? data.points : [];
+    const path = points.map((point) => new BMap.Point(point.lon, point.lat));
     if (path.length > 0) {
         const polyline = new BMap.Polyline(path, {
-            strokeColor: color,
+            strokeColor: "#13b4b0",
             strokeWeight: 4,
             strokeOpacity: 0.86
         });
@@ -1983,8 +2236,8 @@ async function runTrajectoryQuery() {
     renderInfoPanel("trajectory-info", [
         ["出租车", data.taxiId],
         ["点数", formatCount(data.pointCount)],
-        ["起点", data.pointCount ? `${data.points[0].lon.toFixed(5)}, ${data.points[0].lat.toFixed(5)}` : "-"],
-        ["终点", data.pointCount ? `${data.points[data.points.length - 1].lon.toFixed(5)}, ${data.points[data.points.length - 1].lat.toFixed(5)}` : "-"],
+        ["起点", path.length > 0 ? `${path[0].lng.toFixed(5)}, ${path[0].lat.toFixed(5)}` : "-"],
+        ["终点", path.length > 0 ? `${path[path.length - 1].lng.toFixed(5)}, ${path[path.length - 1].lat.toFixed(5)}` : "-"],
         ["用时", `${Number(data.elapsedSeconds).toFixed(3)} s`]
     ]);
 
@@ -1996,7 +2249,7 @@ async function runRegionQuery() {
     ensureRegion();
     const { startTime, endTime } = ensureTimeRange(qs("region-start").value, qs("region-end").value);
 
-    const data = await requestJson("/api/region", {
+    const data = await requestJson("/api/region-search", {
         method: "POST",
         body: JSON.stringify({
             startTime,
@@ -2030,7 +2283,7 @@ function createPointCollection(points) {
     const pointCollection = new BMapLib.PointCollection(points, {
         size: BMAP_POINT_SIZE_TINY,
         shape: BMAP_POINT_SHAPE_CIRCLE,
-        color: "rgba(35, 185, 177, 0.92)"
+        color: "#1f78ff"
     });
     pointCollection.addEventListener("click", (event) => {
         const point = event.point;
@@ -2073,32 +2326,126 @@ function buildClusterBuckets(points) {
 }
 
 function createClusterMarker(cluster) {
-    const ratio = Math.min(1, Math.log10(cluster.count + 1) / 4);
-    const radius = 12 + ratio * 20;
-    const fontSize = 12 + ratio * 4;
-    const html = `
-        <div class="cluster-bubble" style="
-            width:${radius * 2}px;
-            height:${radius * 2}px;
-            line-height:${radius * 2}px;
-            font-size:${fontSize}px;
-            opacity:${0.68 + ratio * 0.22};
-        ">${cluster.count}</div>
-    `;
-    return new BMap.Marker(new BMap.Point(cluster.lng, cluster.lat), {
-        icon: new BMap.DivIcon({
-            html,
-            className: "cluster-marker",
-            iconSize: new BMap.Size(radius * 2, radius * 2),
-            iconAnchor: new BMap.Size(radius, radius)
-        })
+    const label = new BMap.Label(String(cluster.count), {
+        position: new BMap.Point(cluster.lng, cluster.lat),
+        offset: new BMap.Size(-12, -12)
     });
+    label.setStyle({
+        color: "#1f78ff",
+        backgroundColor: "rgba(255, 255, 255, 0.96)",
+        border: "1px solid #1f78ff",
+        borderRadius: "0",
+        padding: "0 5px",
+        fontSize: "12px",
+        lineHeight: "14px",
+        whiteSpace: "nowrap",
+        boxShadow: "0 1px 3px rgba(31, 120, 255, 0.12)"
+    });
+    return label;
+}
+
+function normalizeAllTaxiPoints(points, mode) {
+    if (!Array.isArray(points)) {
+        return [];
+    }
+
+    if (mode === "trajectory" || mode === "raw") {
+        return points
+            .map((point) => ({
+                lng: Number(point.lon ?? point.lng),
+                lat: Number(point.lat),
+                count: 1
+            }))
+            .filter((point) => Number.isFinite(point.lng) && Number.isFinite(point.lat));
+    }
+
+    return points
+        .map((point) => ({
+            lng: Number(point.lng ?? point.lon),
+            lat: Number(point.lat),
+            count: Number(point.count ?? 1)
+        }))
+        .filter((point) => Number.isFinite(point.lng) && Number.isFinite(point.lat));
+}
+
+function renderAllTaxiTrajectoryResult(data, enableMode = true) {
+    if (enableMode) {
+        state.allTaxiMode = true;
+    }
+
+    clearTrajectoryOverlays();
+    clearRegionOverlay();
+    resetDensityState();
+
+    const mode = String(data?.mode || "cluster");
+    const zoom = state.map?.getZoom?.() ?? 12;
+    const normalizedPoints = normalizeAllTaxiPoints(data?.points || [], mode);
+    state.currentAllTaxiPointCount = normalizedPoints.length;
+
+    if (normalizedPoints.length === 0) {
+        state.currentAllTaxiRenderMode = mode === "raw" || mode === "trajectory" ? "point" : "cluster";
+        renderInfoPanel("trajectory-info", [
+            ["全图点数", "0"],
+            ["视野范围", "当前范围内无数据"],
+            ["渲染模式", state.currentAllTaxiRenderMode === "point" ? "海量点" : "聚合"]
+        ]);
+        updateModeStatus("全图车辆");
+        return;
+    }
+
+    if (mode === "raw" || mode === "trajectory") {
+        state.currentAllTaxiRenderMode = "point";
+        if (zoom >= 18 && window.BMapLib && window.BMapLib.PointCollection) {
+            const points = normalizedPoints.map((point) => new BMap.Point(point.lng, point.lat));
+            state.allTaxiPointCollection = createPointCollection(points);
+            state.map.addOverlay(state.allTaxiPointCollection);
+        } else if (zoom >= 18) {
+            normalizedPoints.forEach((point) => {
+                addTrajectoryOverlay(new BMap.Marker(new BMap.Point(point.lng, point.lat), {
+                    icon: new BMap.Symbol(BMap_Symbol_SHAPE_POINT, {
+                        scale: 0.45,
+                        fillColor: "#1f78ff",
+                        fillOpacity: 1,
+                        strokeColor: "#ffffff",
+                        strokeWeight: 1
+                    })
+                }));
+            });
+        } else {
+            state.allTaxiDotOverlay = new TaxiDotOverlay(normalizedPoints);
+            state.allTaxiDotOverlay.attach(state.map);
+        }
+        renderInfoPanel("trajectory-info", [
+            ["全图点数", formatCount(data.pointCount ?? normalizedPoints.length)],
+            ["当前缩放", String(zoom)],
+            ["渲染模式", "海量点"],
+            ["用时", `${Number(data.elapsedSeconds || 0).toFixed(3)} s`]
+        ]);
+        updateModeStatus("全图车辆");
+        return;
+    }
+
+    state.currentAllTaxiRenderMode = "cluster";
+    normalizedPoints.forEach((cluster) => {
+        addTrajectoryOverlay(createClusterMarker(cluster));
+    });
+
+    renderInfoPanel("trajectory-info", [
+        ["聚合点数", formatCount(data.clusterCount ?? normalizedPoints.length)],
+        ["原始点数", formatCount(data.pointCount ?? normalizedPoints.length)],
+        ["当前缩放", String(zoom)],
+        ["渲染模式", "聚合"],
+        ["用时", `${Number(data.elapsedSeconds || 0).toFixed(3)} s`]
+    ]);
+    updateModeStatus("全图车辆");
 }
 
 function scheduleAllTaxiRefresh() {
     if (!state.allTaxiMode) {
         return;
     }
+    const zoom = state.map?.getZoom?.() ?? 12;
+    const delay = zoom >= 18 ? 800 : 240;
     if (state.allTaxiRefreshTimer) {
         clearTimeout(state.allTaxiRefreshTimer);
     }
@@ -2108,7 +2455,7 @@ function scheduleAllTaxiRefresh() {
                 renderInfoPanel("trajectory-info", [], error.message);
             });
         }
-    }, 120);
+    }, delay);
 }
 
 function stopAllTaxiMode(clearOverlay = false) {
@@ -2118,6 +2465,10 @@ function stopAllTaxiMode(clearOverlay = false) {
         clearTimeout(state.allTaxiRefreshTimer);
         state.allTaxiRefreshTimer = null;
     }
+    if (state.allTaxiBoundsRetryTimer) {
+        clearTimeout(state.allTaxiBoundsRetryTimer);
+        state.allTaxiBoundsRetryTimer = null;
+    }
     state.currentAllTaxiPointCount = 0;
     if (clearOverlay) {
         clearTrajectoryOverlays();
@@ -2126,17 +2477,31 @@ function stopAllTaxiMode(clearOverlay = false) {
 
 async function runAllTaxiQuery(enableMode = true) {
     const requestSeq = ++state.allTaxiRequestSeq;
-    const bounds = state.map.getBounds();
-    const sw = bounds.getSouthWest();
-    const ne = bounds.getNorthEast();
+    const bounds = readValidMapBounds();
+    if (!bounds) {
+        if (state.allTaxiBoundsRetryTimer) {
+            clearTimeout(state.allTaxiBoundsRetryTimer);
+        }
+        state.allTaxiBoundsRetryTimer = setTimeout(() => {
+            state.allTaxiBoundsRetryTimer = null;
+            if (state.allTaxiMode) {
+                runAllTaxiQuery(enableMode).catch((error) => {
+                    renderInfoPanel("trajectory-info", [], error.message);
+                });
+            }
+        }, 180);
+        return;
+    }
 
-    const data = await requestJson("/api/all_taxi_points", {
+    const data = await requestJson("/api/trajectory", {
         method: "POST",
         body: JSON.stringify({
-            minLon: sw.lng,
-            minLat: sw.lat,
-            maxLon: ne.lng,
-            maxLat: ne.lat
+            taxiId: 0,
+            minLon: bounds.minLon,
+            minLat: bounds.minLat,
+            maxLon: bounds.maxLon,
+            maxLat: bounds.maxLat,
+            zoom: state.map.getZoom()
         })
     });
 
@@ -2148,45 +2513,7 @@ async function runAllTaxiQuery(enableMode = true) {
         state.allTaxiMode = true;
     }
 
-    clearTrajectoryOverlays();
-    clearRegionOverlay();
-    resetDensityState();
-
-    const points = data.points.map((point) => new BMap.Point(point.lon, point.lat));
-    state.currentAllTaxiPointCount = points.length;
-
-    if (points.length === 0) {
-        renderInfoPanel("trajectory-info", [
-            ["全图点数", "0"],
-            ["视野范围", "当前范围内无数据"],
-            ["渲染模式", state.currentAllTaxiRenderMode === "point" ? "海量点" : "聚合"]
-        ]);
-        updateModeStatus("全图车辆");
-        return;
-    }
-
-    const zoom = state.map.getZoom();
-    const usePointMode = zoom >= 15 && points.length <= 25000;
-    state.currentAllTaxiRenderMode = usePointMode ? "point" : "cluster";
-
-    if (usePointMode && window.BMapLib && window.BMapLib.PointCollection) {
-        state.allTaxiPointCollection = createPointCollection(points);
-        state.map.addOverlay(state.allTaxiPointCollection);
-    } else {
-        const clusters = buildClusterBuckets(points);
-        clusters.forEach((cluster) => {
-            addTrajectoryOverlay(createClusterMarker(cluster));
-        });
-    }
-
-    renderInfoPanel("trajectory-info", [
-        ["全图点数", formatCount(points.length)],
-        ["当前缩放", String(zoom)],
-        ["渲染模式", usePointMode ? "海量点" : "聚合"],
-        ["用时", `${Number(data.elapsedSeconds).toFixed(3)} s`]
-    ]);
-
-    updateModeStatus("全图车辆");
+    renderAllTaxiTrajectoryResult(data, enableMode);
 }
 
 function tryGetCellByPoint(point) {

@@ -1,4 +1,4 @@
-# Taxi Analysis 接口文档
+﻿# Taxi Analysis 接口文档
 
 ## 1. 文档目的
 本文档用于前后端开发、测试与联调，说明当前项目已实现接口的请求方式、参数约束、响应结构和错误返回。
@@ -239,7 +239,7 @@ Host: 127.0.0.1:8080
 ## 9. 区域车流密度分析接口
 
 ### 9.1 密度分析
-- 接口用途：按“空间网格 + 时间分桶”统计车流密度变化
+- 接口用途：按“空间网格 + 时间分桶”统计车辆密度变化
 - 请求方法：`POST`
 - 请求路径：`/api/density`
 - 是否需要登录：否
@@ -287,7 +287,25 @@ Host: 127.0.0.1:8080
 }
 ```
 
-#### 响应示例（节选）
+#### 计算逻辑
+- 先按时间桶和固定网格把轨迹点分组，再对每个“时间桶 + 网格”统计结果。
+- 单个网格的密度指标：
+  - `vehicleDensity = vehicleCount / cellAreaKm2`
+  - `flowIntensity = pointCount / cellAreaKm2`
+- 与相邻时间桶对比的变化指标：
+  - `deltaVehicleCount = currentVehicleCount - previousVehicleCount`
+  - `deltaVehicleDensity = currentVehicleDensity - previousVehicleDensity`
+  - `deltaRate = (current - previous) / previous`，当 `previous = 0` 时返回 `0`
+- 时间桶级汇总指标：
+  - `maxVehicleCount`：当前时间桶内单格最大车辆数
+  - `maxVehicleDensity`：当前时间桶内最大车辆密度
+  - `avgVehicleDensity`：当前时间桶内所有有效网格的平均车辆密度
+  - `totalPointCount`：当前时间桶内所有网格的轨迹点数总和
+  - `totalVehicleCount`：当前时间桶内所有网格的去重车辆数总和
+  - `totalFlowDensity`：当前时间桶内所有网格车辆密度总和
+  - `deltaRate`：当前时间桶相对上一时间桶的变化比例
+
+#### 响应示例
 
 ```json
 {
@@ -344,28 +362,44 @@ Host: 127.0.0.1:8080
 }
 ```
 
-#### 响应字段说明（核心）
+#### 响应字段说明
 
 | 字段 | 说明 |
 |---|---|
-| `regionSource` | `selection`（来自前端区域）或 `full-map`（回退全图） |
+| `minLon/minLat/maxLon/maxLat` | 实际分析区域边界；前端可据此重建固定网格 |
+| `regionSource` | `selection` 表示来源于框选区域，`full-map` 表示回退到全图范围 |
+| `lonStep/latStep` | 网格在经纬度方向上的步长 |
+| `cellAreaKm2` | 单个网格的面积，单位为 km² |
+| `columnCount` | 网格列数 |
+| `rowCount` | 网格行数 |
 | `bucketCount` | 时间桶数量 |
-| `gridCount` | 网格总数（列数 × 行数） |
-| `analysisScale` | 分析规模（桶数 × 网格数） |
+| `gridCount` | 网格总数，等于列数 × 行数 |
+| `analysisScale` | 分析规模，等于时间桶数 × 网格总数，用于评估数据量 |
+| `maxVehicleDensity` | 全部时间桶、全部网格中的最大车辆密度 |
+| `buckets[].startTime/endTime` | 当前时间桶的起止时间戳 |
+| `buckets[].maxVehicleCount` | 当前时间桶内单格最大车辆数 |
+| `buckets[].maxVehicleDensity` | 当前时间桶内最大车辆密度 |
+| `buckets[].avgVehicleDensity` | 当前时间桶内所有有效网格的平均车辆密度 |
+| `buckets[].totalPointCount` | 当前时间桶内轨迹点数总和 |
+| `buckets[].totalVehicleCount` | 当前时间桶内去重车辆数总和 |
+| `buckets[].totalFlowDensity` | 当前时间桶内车辆密度总和 |
+| `buckets[].deltaRate` | 当前时间桶相对上一时间桶的变化比例 |
 | `buckets[].cells[].gx/gy` | 网格索引 |
 | `buckets[].cells[].minLon/minLat/maxLon/maxLat` | 网格地理边界 |
-| `buckets[].cells[].pointCount` | 当前桶该网格采样点数 |
-| `buckets[].cells[].vehicleCount` | 当前桶该网格去重车辆数 |
-| `buckets[].cells[].vehicleDensity` | 车辆密度（车辆数/km²） |
-| `buckets[].cells[].flowIntensity` | 流强度（点数/km²） |
-| `buckets[].cells[].delta*` | 相对上一时间桶同网格变化 |
+| `buckets[].cells[].pointCount` | 当前时间桶该网格的轨迹点数 |
+| `buckets[].cells[].vehicleCount` | 当前时间桶该网格的去重车辆数 |
+| `buckets[].cells[].vehicleDensity` | 车辆密度，单位为 车辆数/km² |
+| `buckets[].cells[].flowIntensity` | 流强度，单位为 点数/km² |
+| `buckets[].cells[].deltaVehicleCount` | 相对上一时间桶同网格的车辆数变化 |
+| `buckets[].cells[].deltaVehicleDensity` | 相对上一时间桶同网格的车辆密度变化 |
+| `buckets[].cells[].deltaRate` | 相对上一时间桶同网格的变化比例 |
 
 #### 错误场景
-- 区域字段只传部分（如只传 `minLon`）
+- 区域字段只传部分字段，例如只传 `minLon`
 - `startTime > endTime`
 - `intervalMinutes <= 0`
 - `cellSizeMeters <= 0`
-- 配置边界异常（回退全图场景）
+- 配置边界异常，导致回退全图时分析范围无效
 
 ---
 
@@ -377,7 +411,7 @@ Host: 127.0.0.1:8080
 3. 初始化地图
 4. 绑定功能按钮事件
 
-### 10.2 模块与接口对应
+### 10.2 模块与接口对接
 - 查询轨迹：`POST /api/trajectory`
 - 区域查找：`POST /api/region-search`
 - 车辆密度分析：`POST /api/density`
