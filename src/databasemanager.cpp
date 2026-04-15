@@ -1,5 +1,5 @@
 #include "databasemanager.h"
-
+#include <algorithm>
 #include <sqlite3.h>
 
 #include <chrono>
@@ -78,12 +78,22 @@ bool DatabaseManager::open() {
         return false;
     }
 
-    if (!execSql(db, "PRAGMA synchronous = OFF;")) {
-        return false;
-    }
     if (!execSql(db, "PRAGMA journal_mode = MEMORY;")) {
         return false;
     }
+    if (!execSql(db, "PRAGMA synchronous = OFF;")) {
+        return false;
+    }
+    if (!execSql(db, "PRAGMA temp_store = MEMORY;")) {
+        return false;
+    }
+    if (!execSql(db, "PRAGMA cache_size = -262144;")) {   // 约 256MB 页缓存
+        return false;
+    }
+    if (!execSql(db, "PRAGMA mmap_size = 1073741824;")) { // 1GB mmap，上限由系统决定
+        return false;
+    }
+
     if (!execSql(db, "CREATE TABLE IF NOT EXISTS taxi_points (id INTEGER, time INTEGER, lon REAL, lat REAL);")) {
         Error() << "建表失败" << std::endl;
         return false;
@@ -91,7 +101,6 @@ bool DatabaseManager::open() {
 
     return true;
 }
-
 bool DatabaseManager::batchInsert(const std::vector<GPSPoint>& points) {
     if (points.empty()) {
         return true;
@@ -329,7 +338,7 @@ void DatabaseManager::checkAndImportData(DatabaseManager& dbm, const AppConfig& 
         return;
     }
 
-    Debug() << "--- 数据库为空，开始导入数据 ---" << std::endl;
+    Debug() << "--- 数据库为空，开始导入数据（排序建库模式） ---" << std::endl;
     if (!fs::exists(config.dataDir) || !fs::is_directory(config.dataDir)) {
         Debug() << "Data directory does not exist, cannot import: " << config.dataDir << std::endl;
         return;
@@ -348,10 +357,12 @@ void DatabaseManager::checkAndImportData(DatabaseManager& dbm, const AppConfig& 
         return;
     }
 
-    const auto start = std::chrono::steady_clock::now();
-    std::vector<GPSPoint> buffer;
+    const auto totalStart = std::chrono::steady_clock::now();
+
+    std::vector<GPSPoint> allImported;
     int fileCount = 0;
-    std::int64_t totalPoints = 0;
+    std::int64_t invalidLineCount = 0;
+    std::int64_t invalidTimeCount = 0;
 
     for (const auto& entry : fs::recursive_directory_iterator(config.dataDir)) {
         if (!entry.is_regular_file() || entry.path().extension() != ".txt") {
@@ -372,10 +383,10 @@ void DatabaseManager::checkAndImportData(DatabaseManager& dbm, const AppConfig& 
             std::string lonStr;
             std::string latStr;
 
-            if (!std::getline(ss, idStr, ',')) continue;
-            if (!std::getline(ss, timeStr, ',')) continue;
-            if (!std::getline(ss, lonStr, ',')) continue;
-            if (!std::getline(ss, latStr, ',')) continue;
+            if (!std::getline(ss, idStr, ',')) { ++invalidLineCount; continue; }
+            if (!std::getline(ss, timeStr, ',')) { ++invalidLineCount; continue; }
+            if (!std::getline(ss, lonStr, ',')) { ++invalidLineCount; continue; }
+            if (!std::getline(ss, latStr, ',')) { ++invalidLineCount; continue; }
 
             GPSPoint p{};
             try {
@@ -384,40 +395,71 @@ void DatabaseManager::checkAndImportData(DatabaseManager& dbm, const AppConfig& 
                 p.lon = std::stod(lonStr);
                 p.lat = std::stod(latStr);
             } catch (...) {
+                ++invalidLineCount;
+                continue;
+            }
+
+            if (p.timestamp == 0) {
+                ++invalidTimeCount;
                 continue;
             }
 
             if (p.lon > config.minLon && p.lon < config.maxLon &&
                 p.lat > config.minLat && p.lat < config.maxLat) {
-                buffer.push_back(p);
+                allImported.push_back(p);
             }
         }
 
         ++fileCount;
-
         if (fileCount % config.batchSize == 0) {
-            if (!dbm.batchInsert(buffer)) {
-                Debug() << "批量插入失败，程序中止导入" << std::endl;
-                return;
-            }
-
-            totalPoints += static_cast<std::int64_t>(buffer.size());
-            Debug() << "进度: " << fileCount << "个文件 | 已存入: " << totalPoints << "个点" << std::endl;
-            buffer.clear();
+            Debug() << "已扫描 " << fileCount << " 个文件，当前累计有效点数: "
+                    << allImported.size() << std::endl;
         }
     }
 
-    if (!buffer.empty()) {
-        if (!dbm.batchInsert(buffer)) {
-            Debug() << "最后一批插入失败" << std::endl;
+    Debug() << "文件扫描完成，开始内存排序。总点数: " << allImported.size()
+            << "，无效行数: " << invalidLineCount
+            << "，无效时间数: " << invalidTimeCount << std::endl;
+
+    const auto sortStart = std::chrono::steady_clock::now();
+
+    std::sort(allImported.begin(), allImported.end(),
+              [](const GPSPoint& a, const GPSPoint& b) {
+                  if (a.id != b.id) return a.id < b.id;
+                  if (a.timestamp != b.timestamp) return a.timestamp < b.timestamp;
+                  if (a.lon != b.lon) return a.lon < b.lon;
+                  return a.lat < b.lat;
+              });
+
+    const auto sortMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - sortStart).count();
+    Debug() << "内存排序完成，耗时(ms): " << sortMs << std::endl;
+
+    const std::size_t insertChunkSize = 500000;
+    std::size_t inserted = 0;
+
+    for (std::size_t begin = 0; begin < allImported.size(); begin += insertChunkSize) {
+        const std::size_t end = std::min(begin + insertChunkSize, allImported.size());
+        std::vector<GPSPoint> chunk(allImported.begin() + static_cast<std::ptrdiff_t>(begin),
+                                    allImported.begin() + static_cast<std::ptrdiff_t>(end));
+
+        if (!dbm.batchInsert(chunk)) {
+            Debug() << "排序后分批插入失败，程序中止导入" << std::endl;
             return;
         }
 
-        totalPoints += static_cast<std::int64_t>(buffer.size());
-        buffer.clear();
+        inserted += chunk.size();
+        Debug() << "已按序写入: " << inserted << "/" << allImported.size() << std::endl;
     }
 
-    const double elapsedSeconds =
-        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count() / 1000.0;
-    Debug() << "导入完成！总点数: " << totalPoints << " 耗时: " << elapsedSeconds << "秒" << std::endl;
+    sqlite3* db = dbm.getRawHandle();
+    if (db != nullptr) {
+        execSql(db, "ANALYZE;");
+    }
+
+    const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - totalStart).count();
+
+    Debug() << "排序建库完成！总点数: " << allImported.size()
+            << "，总耗时(ms): " << totalMs << std::endl;
 }

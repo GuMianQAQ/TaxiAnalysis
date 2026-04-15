@@ -1,8 +1,10 @@
 #include "datamanager.h"
 #include "databasemanager.h"
-
+#include <atomic>
+#include <mutex>
+#include <thread>
 #include <sqlite3.h>
-
+#include <chrono>
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
@@ -20,7 +22,237 @@ std::unique_ptr<QuadNode> DataManager::quadTreeRoot = nullptr;
 std::set<const QuadNode*> DataManager::exceptionalNodes;
 
 namespace {
+    bool readChunkByRowIdRange(const std::string& dbPath,
+                           std::int64_t beginRowId,
+                           std::int64_t endRowId,
+                           std::vector<GPSPoint>& outPoints,
+                           std::string& errorMessage,
+                           long long& elapsedMs)
+{
+    outPoints.clear();
+    elapsedMs = 0;
 
+    if (beginRowId > endRowId) {
+        return true;
+    }
+
+    auto start = std::chrono::steady_clock::now();
+
+    sqlite3* db = nullptr;
+    const int rc = sqlite3_open_v2(
+        dbPath.c_str(),
+        &db,
+        SQLITE_OPEN_READONLY,
+        nullptr);
+
+    if (rc != SQLITE_OK || db == nullptr) {
+        errorMessage = "线程打开数据库失败";
+        if (db != nullptr) {
+            errorMessage += ": ";
+            errorMessage += sqlite3_errmsg(db);
+            sqlite3_close(db);
+        }
+        return false;
+    }
+
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql =
+        "SELECT id, time, lon, lat "
+        "FROM taxi_points "
+        "WHERE rowid >= ? AND rowid <= ? "
+        "ORDER BY rowid;";
+
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        errorMessage = "按 rowid 分块读取预编译失败: ";
+        errorMessage += sqlite3_errmsg(db);
+        sqlite3_close(db);
+        return false;
+    }
+
+    sqlite3_bind_int64(stmt, 1, static_cast<sqlite3_int64>(beginRowId));
+    sqlite3_bind_int64(stmt, 2, static_cast<sqlite3_int64>(endRowId));
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        GPSPoint p{};
+        p.id = sqlite3_column_int(stmt, 0);
+        p.timestamp = static_cast<long long>(sqlite3_column_int64(stmt, 1));
+        p.lon = sqlite3_column_double(stmt, 2);
+        p.lat = sqlite3_column_double(stmt, 3);
+        outPoints.push_back(p);
+    }
+
+    sqlite3_finalize(stmt);
+    sqlite3_close(db);
+
+    elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start).count();
+    return true;
+}
+
+bool isSortedByIdAndTime(const std::vector<GPSPoint>& points, int& badIndex)
+{
+    badIndex = -1;
+    if (points.size() < 2) {
+        return true;
+    }
+
+    for (std::size_t i = 1; i < points.size(); ++i) {
+        const GPSPoint& prev = points[i - 1];
+        const GPSPoint& curr = points[i];
+
+        if (curr.id < prev.id) {
+            badIndex = static_cast<int>(i);
+            return false;
+        }
+        if (curr.id == prev.id && curr.timestamp < prev.timestamp) {
+            badIndex = static_cast<int>(i);
+            return false;
+        }
+    }
+    return true;
+}
+
+bool buildIdRangesFromAllPoints(const std::vector<GPSPoint>& points,
+                                std::unordered_map<int, VehicleRange>& idToRange)
+{
+    idToRange.clear();
+    if (points.empty()) {
+        return true;
+    }
+
+    int currentId = points[0].id;
+    int rangeStart = 0;
+
+    for (int i = 1; i < static_cast<int>(points.size()); ++i) {
+        if (points[static_cast<std::size_t>(i)].id != currentId) {
+            idToRange[currentId] = {rangeStart, i - 1};
+            currentId = points[static_cast<std::size_t>(i)].id;
+            rangeStart = i;
+        }
+    }
+
+    idToRange[currentId] = {rangeStart, static_cast<int>(points.size()) - 1};
+    return true;
+}
+
+bool loadAllPointsOrderedSingleThread(DatabaseManager& dbm,
+                                      std::vector<GPSPoint>& outPoints,
+                                      std::unordered_map<int, VehicleRange>& outRanges,
+                                      long long& elapsedMs)
+{
+    outPoints.clear();
+    outRanges.clear();
+    elapsedMs = 0;
+
+    sqlite3* db = dbm.getRawHandle();
+    if (db == nullptr) {
+        Debug() << "数据库未打开，无法加载点数据";
+        return false;
+    }
+
+    const std::int64_t totalCount = dbm.getPointCount();
+    if (totalCount <= 0) {
+        return true;
+    }
+
+    auto start = std::chrono::steady_clock::now();
+
+    outPoints.reserve(static_cast<std::size_t>(totalCount));
+
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql =
+        "SELECT id, time, lon, lat "
+        "FROM taxi_points "
+        "ORDER BY id ASC, time ASC;";
+
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        Debug() << "读取点数据失败: " << sqlite3_errmsg(db);
+        return false;
+    }
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        GPSPoint p{};
+        p.id = sqlite3_column_int(stmt, 0);
+        p.timestamp = static_cast<long long>(sqlite3_column_int64(stmt, 1));
+        p.lon = sqlite3_column_double(stmt, 2);
+        p.lat = sqlite3_column_double(stmt, 3);
+        outPoints.push_back(p);
+    }
+
+    sqlite3_finalize(stmt);
+
+    int badIndex = -1;
+    if (!isSortedByIdAndTime(outPoints, badIndex)) {
+        Debug() << "单线程 ORDER BY 结果竟然未通过有序校验，异常位置: " << badIndex;
+        return false;
+    }
+
+    buildIdRangesFromAllPoints(outPoints, outRanges);
+
+    elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start).count();
+    return true;
+}
+bool readChunkFromDatabase(const std::string& dbPath,
+                           std::int64_t offset,
+                           std::int64_t limit,
+                           std::vector<GPSPoint>& outPoints,
+                           std::string& errorMessage)
+{
+    outPoints.clear();
+    if (limit <= 0) {
+        return true;
+    }
+
+    sqlite3* db = nullptr;
+    const int openRc = sqlite3_open_v2(
+        dbPath.c_str(),
+        &db,
+        SQLITE_OPEN_READONLY,
+        nullptr);
+
+    if (openRc != SQLITE_OK || db == nullptr) {
+        errorMessage = "线程打开数据库失败";
+        if (db != nullptr) {
+            errorMessage += ": ";
+            errorMessage += sqlite3_errmsg(db);
+            sqlite3_close(db);
+        }
+        return false;
+    }
+
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql =
+        "SELECT id, time, lon, lat "
+        "FROM taxi_points "
+        "ORDER BY id ASC, time ASC "
+        "LIMIT ? OFFSET ?;";
+
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        errorMessage = "线程预编译查询失败: ";
+        errorMessage += sqlite3_errmsg(db);
+        sqlite3_close(db);
+        return false;
+    }
+
+    sqlite3_bind_int64(stmt, 1, static_cast<sqlite3_int64>(limit));
+    sqlite3_bind_int64(stmt, 2, static_cast<sqlite3_int64>(offset));
+
+    outPoints.reserve(static_cast<std::size_t>(limit));
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        GPSPoint p{};
+        p.id = sqlite3_column_int(stmt, 0);
+        p.timestamp = static_cast<long long>(sqlite3_column_int64(stmt, 1));
+        p.lon = sqlite3_column_double(stmt, 2);
+        p.lat = sqlite3_column_double(stmt, 3);
+        outPoints.push_back(p);
+    }
+
+    sqlite3_finalize(stmt);
+    sqlite3_close(db);
+    return true;
+}
 struct GridKey {
     int x;
     int y;
@@ -179,71 +411,201 @@ bool DataManager::loadAllPoints(DatabaseManager& dbm) {
 
     sqlite3* db = dbm.getRawHandle();
     if (db == nullptr) {
-        Debug() << "数据库未打开，无法加载点数据" ;
+        Debug() << "数据库未打开，无法加载点数据";
         return false;
     }
 
     const std::int64_t totalCount = dbm.getPointCount();
     if (totalCount <= 0) {
-        Debug() << "数据库中没有点数据" ;
+        Debug() << "数据库中没有点数据";
+        return true;
+    }
+
+    std::int64_t minRowId = 0;
+    std::int64_t maxRowId = 0;
+    {
+        sqlite3_stmt* stmt = nullptr;
+        const char* sql = "SELECT MIN(rowid), MAX(rowid) FROM taxi_points;";
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+            Debug() << "读取 rowid 范围失败: " << sqlite3_errmsg(db);
+            return false;
+        }
+
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            minRowId = static_cast<std::int64_t>(sqlite3_column_int64(stmt, 0));
+            maxRowId = static_cast<std::int64_t>(sqlite3_column_int64(stmt, 1));
+        }
+        sqlite3_finalize(stmt);
+    }
+
+    if (minRowId <= 0 || maxRowId < minRowId) {
+        Debug() << "rowid 范围异常，回退单线程 ORDER BY 读取";
+        long long fallbackMs = 0;
+        if (!loadAllPointsOrderedSingleThread(dbm, allPoints, idToRange, fallbackMs)) {
+            return false;
+        }
+        Debug() << "单线程 ORDER BY 读取完成，耗时(ms): " << fallbackMs;
+        return true;
+    }
+
+    unsigned int threadCount = std::thread::hardware_concurrency();
+    if (threadCount == 0) {
+        threadCount = 4;
+    }
+    threadCount = std::min<unsigned int>(threadCount, 8);
+
+    const std::int64_t rowidSpan = maxRowId - minRowId + 1;
+    const std::int64_t chunkSpan =
+        (rowidSpan + static_cast<std::int64_t>(threadCount) - 1) /
+        static_cast<std::int64_t>(threadCount);
+
+    const std::string dbPath = dbm.getDbPath();
+    if (dbPath.empty()) {
+        Debug() << "数据库路径为空，回退单线程 ORDER BY 读取";
+        long long fallbackMs = 0;
+        if (!loadAllPointsOrderedSingleThread(dbm, allPoints, idToRange, fallbackMs)) {
+            return false;
+        }
+        Debug() << "单线程 ORDER BY 读取完成，耗时(ms): " << fallbackMs;
+        return true;
+    }
+
+    auto totalStart = std::chrono::steady_clock::now();
+
+    std::vector<std::vector<GPSPoint>> chunkResults(threadCount);
+    std::vector<long long> chunkElapsed(threadCount, 0);
+    std::vector<std::thread> workers;
+    workers.reserve(threadCount);
+
+    std::atomic<bool> hasError(false);
+    std::mutex errorMutex;
+    std::string firstErrorMessage;
+
+    Debug() << "开始按 rowid 多线程读取，总点数: " << totalCount
+            << "，rowid范围: [" << minRowId << ", " << maxRowId << "]"
+            << "，线程数: " << threadCount
+            << "，每块 rowid 跨度: " << chunkSpan;
+
+    for (unsigned int i = 0; i < threadCount; ++i) {
+        const std::int64_t beginRowId =
+            minRowId + static_cast<std::int64_t>(i) * chunkSpan;
+        if (beginRowId > maxRowId) {
+            break;
+        }
+
+        const std::int64_t endRowId =
+            std::min(maxRowId, beginRowId + chunkSpan - 1);
+
+        workers.emplace_back([&, i, beginRowId, endRowId]() {
+            std::string errorMessage;
+            long long elapsedMs = 0;
+
+            if (!readChunkByRowIdRange(
+                    dbPath,
+                    beginRowId,
+                    endRowId,
+                    chunkResults[i],
+                    errorMessage,
+                    elapsedMs)) {
+                hasError.store(true);
+                std::lock_guard<std::mutex> lock(errorMutex);
+                if (firstErrorMessage.empty()) {
+                    firstErrorMessage = errorMessage;
+                }
+                return;
+            }
+
+            chunkElapsed[i] = elapsedMs;
+            Debug() << "分块 " << i
+                    << " 完成，rowid=[" << beginRowId << "," << endRowId << "]"
+                    << "，读取点数=" << chunkResults[i].size()
+                    << "，耗时(ms)=" << elapsedMs;
+        });
+    }
+
+    for (auto& worker : workers) {
+        if (worker.joinable()) {
+            worker.join();
+        }
+    }
+
+    if (hasError.load()) {
+        Debug() << "按 rowid 多线程读取失败: " << firstErrorMessage
+                << "，回退单线程 ORDER BY 读取";
+        long long fallbackMs = 0;
+        if (!loadAllPointsOrderedSingleThread(dbm, allPoints, idToRange, fallbackMs)) {
+            return false;
+        }
+        Debug() << "单线程 ORDER BY 回退完成，耗时(ms): " << fallbackMs;
         return true;
     }
 
     allPoints.reserve(static_cast<std::size_t>(totalCount));
-
-    sqlite3_stmt* stmt = nullptr;
-    const char* sql = "SELECT id, time, lon, lat FROM taxi_points ORDER BY id ASC, time ASC;";
-    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        Debug() << "读取点数据失败: " << sqlite3_errmsg(db) ;
-        return false;
+    for (unsigned int i = 0; i < threadCount; ++i) {
+        allPoints.insert(
+            allPoints.end(),
+            std::make_move_iterator(chunkResults[i].begin()),
+            std::make_move_iterator(chunkResults[i].end()));
     }
 
-    std::int64_t loadedCount = 0;
-    int currentId = -1;
-    int rangeStart = -1;
+    const long long mergeDoneMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - totalStart).count();
 
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        GPSPoint p{};
-        p.id = sqlite3_column_int(stmt, 0);
-        p.timestamp = static_cast<long long>(sqlite3_column_int64(stmt, 1));
-        p.lon = sqlite3_column_double(stmt, 2);
-        p.lat = sqlite3_column_double(stmt, 3);
+    Debug() << "多线程 rowid 读取+合并完成，当前点数=" << allPoints.size()
+            << "，总耗时(ms)=" << mergeDoneMs;
 
-        const int currentIndex = static_cast<int>(allPoints.size());
+    if (static_cast<std::int64_t>(allPoints.size()) != totalCount) {
+        Debug() << "点数不一致，期望=" << totalCount
+                << "，实际=" << allPoints.size()
+                << "，回退单线程 ORDER BY";
+        allPoints.clear();
+        idToRange.clear();
 
-        if (currentId != -1 && p.id != currentId) {
-            idToRange[currentId] = {rangeStart, currentIndex - 1};
-            rangeStart = currentIndex;
+        long long fallbackMs = 0;
+        if (!loadAllPointsOrderedSingleThread(dbm, allPoints, idToRange, fallbackMs)) {
+            return false;
         }
-
-        if (currentId == -1) {
-            currentId = p.id;
-            rangeStart = currentIndex;
-        } else if (p.id != currentId) {
-            currentId = p.id;
-        }
-
-        allPoints.push_back(p);
-        ++loadedCount;
-
-        if (loadedCount % 1000000 == 0) {
-            Debug() << "已加载 " << loadedCount << " 个点到内存..." ;
-        }
+        Debug() << "单线程 ORDER BY 回退完成，耗时(ms): " << fallbackMs;
+        return true;
     }
 
-    sqlite3_finalize(stmt);
+    int badIndex = -1;
+    const bool sortedOk = isSortedByIdAndTime(allPoints, badIndex);
 
-    if (!allPoints.empty() && currentId != -1) {
-        idToRange[currentId] = {rangeStart, static_cast<int>(allPoints.size()) - 1};
+    if (!sortedOk) {
+        Debug() << "rowid 快路径未通过 id/time 有序校验，异常位置=" << badIndex
+                << "，回退单线程 ORDER BY 读取";
+
+        std::vector<GPSPoint> fallbackPoints;
+        std::unordered_map<int, VehicleRange> fallbackRanges;
+        long long fallbackMs = 0;
+
+        if (!loadAllPointsOrderedSingleThread(dbm, fallbackPoints, fallbackRanges, fallbackMs)) {
+            return false;
+        }
+
+        allPoints = std::move(fallbackPoints);
+        idToRange = std::move(fallbackRanges);
+
+        Debug() << "单线程 ORDER BY 回退完成，耗时(ms): " << fallbackMs;
+        Debug() << "最终 allPoints 已按 id 递增、time 递增排列";
+        Debug() << "共建立 " << idToRange.size() << " 个车辆区间映射";
+        return true;
     }
 
-    Debug() << "全部点加载完成，共 " << loadedCount << " 个点" ;
-    Debug() << "当前 allPoints 已按 id 递增、time 递增排列" ;
-    Debug() << "共建立 " << idToRange.size() << " 个车辆区间映射" ;
+    buildIdRangesFromAllPoints(allPoints, idToRange);
+
+    const long long totalElapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - totalStart).count();
+
+    Debug() << "rowid 快路径通过有序校验";
+    Debug() << "全部点加载完成，共 " << allPoints.size() << " 个点";
+    Debug() << "当前 allPoints 已按 id 递增、time 递增排列";
+    Debug() << "共建立 " << idToRange.size() << " 个车辆区间映射";
+    Debug() << "loadAllPoints 总耗时(ms): " << totalElapsedMs;
 
     return true;
 }
-
 bool DataManager::loadFromDatabase(DatabaseManager& dbm) {
     allPoints.clear();
     exceptionalNodes.clear();

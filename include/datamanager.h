@@ -47,7 +47,7 @@ public:
     static const std::unordered_map<int, VehicleRange>& getIdToRange() { return idToRange; }
     static void buildQuadTree(const AppConfig& config);
     static bool hasQuadTree();
-
+   
     static std::vector<GPSPoint> querySpatial(double minLon, double minLat,
                                               double maxLon, double maxLat);
 

@@ -37,6 +37,7 @@ public:
     static void checkAndImportData(DatabaseManager& dbm, const AppConfig& config);
 
     sqlite3* getRawHandle() const;
+    const std::string& getDbPath() const { return dbPath; }
 
 private:
     sqlite3* db = nullptr;
