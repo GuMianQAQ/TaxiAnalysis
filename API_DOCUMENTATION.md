@@ -1,24 +1,18 @@
-﻿# Taxi Analysis 接口文档
+# Taxi Analysis 接口文档
 
-## 1. 文档目的
-本文档用于前后端开发、测试与联调，说明当前项目已实现接口的请求方式、参数约束、响应结构和错误返回。
+本文档按当前代码库中的 `src/httpserver.cpp` 实际实现整理，目的是让你快速判断哪些接口后续需要改造。
 
-## 2. 适用范围
-适用于当前仓库代码中由 `httpserver.cpp` 提供的全部 HTTP 接口与前端联调行为。
+## 1. 基础约定
 
-## 3. 认证方式
-当前版本无登录态、无 Token、无会话鉴权。所有接口默认开放。
+### 1.1 服务地址
+- 本地调试默认地址：`http://127.0.0.1:8080`
 
-## 4. 通用说明
+### 1.2 通信协议
+- 业务控制请求：JSON
+- 业务错误响应：JSON
+- 当前代码中的分析结果接口：仍是 JSON
 
-### 4.1 基础地址
-- 本地：`http://127.0.0.1:8080`
-
-### 4.2 通用请求头
-- `Content-Type: application/json`（POST 接口）
-- `Accept: application/json`
-
-### 4.3 通用响应结构
+### 1.3 通用响应格式
 成功：
 
 ```json
@@ -40,53 +34,63 @@
 }
 ```
 
-### 4.4 通用错误码
-- `INVALID_JSON`：请求体不是合法 JSON 对象
-- `INVALID_ARGUMENT`：参数不合法
-- `ANALYSIS_FAILED`：分析执行失败
-- `CONFIG_ERROR`：配置错误（如地图边界配置异常）
-- `NOT_FOUND`：资源不存在
-- `FILE_ERROR`：文件读取失败
+### 1.4 通用错误码
+- `INVALID_JSON`：请求体不是合法 JSON
+- `INVALID_ARGUMENT`：参数缺失或非法
+- `ANALYSIS_FAILED`：密度分析执行失败
+- `NOT_FOUND`：查询缓存不存在或已过期
+- `FILE_ERROR`：静态文件读取失败
 
-### 4.5 HTTP 状态码
-- `200`：成功
-- `204`：预检成功（OPTIONS）
-- `400`：请求参数或请求体错误
-- `404`：资源不存在
-- `500`：服务端配置或文件错误
+### 1.5 CORS
+- 后端允许跨域
+- 允许方法：`GET, POST, OPTIONS`
 
 ---
 
-## 5. 接口总览
+## 2. 接口总览
 
-| 模块 | 接口 | 方法 | 路径 |
+| 模块 | 方法 | 路径 | 说明 |
 |---|---|---|---|
-| 静态页面 | 首页 | GET | `/` |
-| 跨域预检 | 预检 | OPTIONS | `/*` |
-| 基础信息 | 服务状态 | GET | `/api/health` |
-| 基础信息 | 地图配置 | GET | `/api/meta` |
-| 轨迹查询 | 轨迹查询 | POST | `/api/trajectory` |
-| 区域查询 | 区域查询 | POST | `/api/region-search` |
-| 密度分析 | 区域车流密度分析 | POST | `/api/density` |
+| 静态页面 | GET | `/` | 返回前端首页 |
+| 预检 | OPTIONS | `/*` | 跨域预检 |
+| 基础信息 | GET | `/api/health` | 服务健康检查 |
+| 基础信息 | GET | `/api/meta` | 地图与全局配置 |
+| 轨迹查询 | POST | `/api/trajectory` | 单车轨迹或视野内全部车辆 |
+| 区域查询 | POST | `/api/region-search` | 区域 + 时间范围统计 |
+| 密度分析 | POST | `/api/density/meta` | 密度分析元信息与查询缓存入口 |
+| 密度分析 | POST | `/api/density/bucket` | 获取某个时间桶的数据 |
+| 密度分析 | POST | `/api/density/cell-trend` | 获取某个网格的时间趋势 |
 
 ---
 
-## 6. 基础信息接口
+## 3. 静态页面
 
-### 6.1 服务状态
-- 接口用途：确认服务是否可用
+### 3.1 首页
+- 请求方法：`GET`
+- 请求路径：`/`
+- 返回内容：`index.html`
+
+如果 `index.html` 不存在：
+- 返回 `404`
+- 响应体为 JSON 错误
+
+如果文件无法读取：
+- 返回 `500`
+- 响应体为 JSON 错误
+
+---
+
+## 4. 基础信息接口
+
+### 4.1 服务健康检查
 - 请求方法：`GET`
 - 请求路径：`/api/health`
-- 是否需要登录：否
 
-请求示例：
+响应字段：
+- `data.status`：固定为 `ok`
+- `data.pointsLoaded`：当前已加载的点数
 
-```http
-GET /api/health HTTP/1.1
-Host: 127.0.0.1:8080
-```
-
-响应示例：
+示例：
 
 ```json
 {
@@ -98,19 +102,19 @@ Host: 127.0.0.1:8080
 }
 ```
 
-响应字段说明：
-- `data.status`：固定 `ok`
-- `data.pointsLoaded`：当前已加载点数
-
----
-
-### 6.2 地图配置
-- 接口用途：前端初始化地图参数与基础范围
+### 4.2 地图与全局配置
 - 请求方法：`GET`
 - 请求路径：`/api/meta`
-- 是否需要登录：否
 
-响应示例：
+响应字段：
+- `minLon / maxLon / minLat / maxLat`：全局地图边界
+- `centerLon / centerLat`：地图中心点
+- `initialZoom`：初始缩放级别
+- `minZoom / maxZoom`：缩放范围
+- `totalPoints`：已加载点数
+- `baiduMapAk`：百度地图 AK
+
+示例：
 
 ```json
 {
@@ -133,95 +137,92 @@ Host: 127.0.0.1:8080
 
 ---
 
-## 7. 轨迹查询接口
+## 5. 轨迹查询接口
 
-### 7.1 轨迹查询
-- 接口用途：
-  - `taxiId > 0`：查询单车完整轨迹
-  - `taxiId = 0`：查询当前视野内全部车辆点（可能返回聚合结果）
+### 5.1 单车轨迹 / 全车视野查询
 - 请求方法：`POST`
 - 请求路径：`/api/trajectory`
-- 是否需要登录：否
 
-#### Body 参数
+#### 请求体
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `taxiId` | number | 是 | 车辆 ID，`0` 表示全部车辆模式 |
-| `minLon` | number | 条件必填 | 仅 `taxiId=0` 时必填 |
-| `minLat` | number | 条件必填 | 仅 `taxiId=0` 时必填 |
-| `maxLon` | number | 条件必填 | 仅 `taxiId=0` 时必填 |
-| `maxLat` | number | 条件必填 | 仅 `taxiId=0` 时必填 |
-| `zoom` | number | 条件必填 | 仅 `taxiId=0` 时用于控制 raw/cluster 返回 |
+| `taxiId` | number | 是 | 车辆 ID，`0` 表示全车视野模式 |
+| `minLon` | number | 条件必填 | `taxiId=0` 时必填 |
+| `minLat` | number | 条件必填 | `taxiId=0` 时必填 |
+| `maxLon` | number | 条件必填 | `taxiId=0` 时必填 |
+| `maxLat` | number | 条件必填 | `taxiId=0` 时必填 |
+| `zoom` | number | 条件必填 | `taxiId=0` 时影响 raw/cluster 返回 |
 
-#### 请求示例（单车）
+#### 返回模式
+
+- `taxiId > 0`：
+  - `data.mode = "trajectory"`
+  - 返回该出租车的完整轨迹点
+
+- `taxiId = 0`：
+  - 如果缩放足够大且点数不多，返回 `raw`
+  - 否则返回 `cluster`
+
+#### 单车返回字段
+- `data.taxiId`
+- `data.mode`
+- `data.pointCount`
+- `data.points`
+
+#### 全车视野返回字段
+- `data.taxiId`
+- `data.mode`
+- `data.pointCount`
+- `data.clusterCount`
+- `data.renderCap`
+- `data.points`
+
+其中：
+- `raw` 模式下，`points` 是原始点数组
+- `cluster` 模式下，`points` 是聚合点数组
+
+#### 点对象
 
 ```json
 {
-  "taxiId": 1234
+  "id": 1234,
+  "timestamp": 1202190000,
+  "lon": 116.4,
+  "lat": 39.9
 }
 ```
 
-#### 请求示例（全部车辆）
-
-```json
-{
-  "taxiId": 0,
-  "minLon": 116.1,
-  "minLat": 39.8,
-  "maxLon": 116.6,
-  "maxLat": 40.1,
-  "zoom": 12
-}
-```
-
-#### 响应字段（核心）
-- `data.mode`：
-  - `trajectory`：单车轨迹
-  - `raw`：全部车辆原始点
-  - `cluster`：全部车辆聚合点
-- `data.points`：对应模式下的点集合
-
-#### 错误场景
+#### 失败场景
 - `taxiId < 0`
-- `taxiId=0` 但缺少视野边界
-- 视野边界不合法（`min >= max`）
+- `taxiId = 0` 但缺少边界参数
+- 边界非法，`min >= max`
 
 ---
 
-## 8. 区域查询接口
+## 6. 区域查询接口
 
-### 8.1 区域查询
-- 接口用途：按区域 + 时间范围统计车辆数与采样点数
+### 6.1 区域 + 时间统计
 - 请求方法：`POST`
 - 请求路径：`/api/region-search`
-- 是否需要登录：否
 
-#### Body 参数
+#### 请求体
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `minLon` | number | 是 | 最小经度 |
-| `minLat` | number | 是 | 最小纬度 |
-| `maxLon` | number | 是 | 最大经度 |
-| `maxLat` | number | 是 | 最大纬度 |
-| `startTime` | number/string | 是 | 开始时间（秒级时间戳） |
-| `endTime` | number/string | 是 | 结束时间（秒级时间戳） |
+| `minLon` | number | 是 | 区域最小经度 |
+| `minLat` | number | 是 | 区域最小纬度 |
+| `maxLon` | number | 是 | 区域最大经度 |
+| `maxLat` | number | 是 | 区域最大纬度 |
+| `startTime` | number/string | 是 | 开始时间 |
+| `endTime` | number/string | 是 | 结束时间 |
 
-#### 请求示例
+#### 返回字段
+- `data.pointCount`：命中点数
+- `data.vehicleCount`：去重车辆数
+- `data.elapsedSeconds`：查询耗时
 
-```json
-{
-  "minLon": 116.1,
-  "minLat": 39.8,
-  "maxLon": 116.6,
-  "maxLat": 40.1,
-  "startTime": 1202190000,
-  "endTime": 1202211600
-}
-```
-
-#### 响应示例
+#### 示例
 
 ```json
 {
@@ -234,91 +235,87 @@ Host: 127.0.0.1:8080
 }
 ```
 
+#### 失败场景
+- 边界非法，`min >= max`
+- 时间范围非法，`startTime > endTime`
+
 ---
 
-## 9. 区域车流密度分析接口
+## 7. 密度分析接口
 
-### 9.1 密度分析
-- 接口用途：按“空间网格 + 时间分桶”统计车辆密度变化
+当前实现把密度分析拆成 3 个接口：
+- `meta`：发起分析，拿查询元信息
+- `bucket`：按时间桶取细粒度数据
+- `cell-trend`：按网格取时间趋势
+
+这三个接口当前都还是 JSON，不是 Arrow IPC。
+
+### 7.1 密度分析元信息
 - 请求方法：`POST`
-- 请求路径：`/api/density`
-- 是否需要登录：否
-- 区域规则：
-  - 若请求体传入完整 `minLon/minLat/maxLon/maxLat`，优先使用该区域（框选区域）
-  - 若未传区域参数，回退到全图配置范围
-  - 若只传了部分区域字段，直接报错
+- 请求路径：`/api/density/meta`
 
-#### Body 参数
+#### 请求体
 
-| 参数 | 类型 | 必填 | 默认值 | 说明 |
-|---|---|---|---|---|
-| `startTime` | number/string | 是 | 无 | 开始时间（秒级时间戳） |
-| `endTime` | number/string | 是 | 无 | 结束时间（秒级时间戳） |
-| `intervalMinutes` | number | 否 | 30 | 时间分桶粒度（分钟） |
-| `cellSizeMeters` | number | 否 | 500 | 网格边长（米） |
-| `minLon` | number | 否 | 回退全图 | 区域最小经度（四字段需完整传入） |
-| `minLat` | number | 否 | 回退全图 | 区域最小纬度（四字段需完整传入） |
-| `maxLon` | number | 否 | 回退全图 | 区域最大经度（四字段需完整传入） |
-| `maxLat` | number | 否 | 回退全图 | 区域最大纬度（四字段需完整传入） |
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `startTime` | number/string | 是 | 开始时间 |
+| `endTime` | number/string | 是 | 结束时间 |
+| `intervalMinutes` | number | 否 | 时间桶粒度，默认 `30` |
+| `cellSizeMeters` | number | 否 | 网格边长，默认 `500` |
+| `minLon` | number | 条件必填 | 若传区域字段，必须四个一起传 |
+| `minLat` | number | 条件必填 | 同上 |
+| `maxLon` | number | 条件必填 | 同上 |
+| `maxLat` | number | 条件必填 | 同上 |
 
-#### 请求示例（使用框选区域）
+#### 规则
+- 如果完全不传区域字段，则回退到全图配置范围
+- 如果只传了部分区域字段，会报错
+- 如果传了完整区域字段，则以该区域为准
 
-```json
-{
-  "startTime": 1202190000,
-  "endTime": 1202211600,
-  "intervalMinutes": 30,
-  "cellSizeMeters": 500,
-  "minLon": 116.2,
-  "minLat": 39.85,
-  "maxLon": 116.5,
-  "maxLat": 40.05
-}
-```
+#### 返回字段
+- `queryId`：本次分析的缓存 ID
+- `regionSource`：`selection` 或 `full-map`
+- `startTime / endTime`
+- `intervalMinutes`
+- `bucketSeconds`
+- `cellSizeMeters`
+- `minLon / minLat / maxLon / maxLat`
+- `lonStep / latStep`
+- `cellAreaKm2`
+- `columnCount / rowCount`
+- `bucketCount`
+- `gridCount`
+- `analysisScale`
+- `maxVehicleDensity`
+- `totalPointCount`
+- `totalVehicleCount`
+- `elapsedSeconds`
+- `cacheFetchCostMs`
+- `buckets`：每个桶的摘要
 
-#### 请求示例（回退全图）
+#### `buckets` 摘要字段
+- `startTime`
+- `endTime`
+- `nonZeroCount`
+- `maxDensity`
 
-```json
-{
-  "startTime": 1202190000,
-  "endTime": 1202211600,
-  "intervalMinutes": 30,
-  "cellSizeMeters": 500
-}
-```
-
-#### 计算逻辑
-- 先按时间桶和固定网格把轨迹点分组，再对每个“时间桶 + 网格”统计结果。
-- 单个网格的密度指标：
-  - `vehicleDensity = vehicleCount / cellAreaKm2`
-  - `flowIntensity = pointCount / cellAreaKm2`
-- 与相邻时间桶对比的变化指标：
-  - `deltaVehicleCount = currentVehicleCount - previousVehicleCount`
-  - `deltaVehicleDensity = currentVehicleDensity - previousVehicleDensity`
-  - `deltaRate = (current - previous) / previous`，当 `previous = 0` 时返回 `0`
-- 时间桶级汇总指标：
-  - `maxVehicleCount`：当前时间桶内单格最大车辆数
-  - `maxVehicleDensity`：当前时间桶内最大车辆密度
-  - `avgVehicleDensity`：当前时间桶内所有有效网格的平均车辆密度
-  - `totalPointCount`：当前时间桶内所有网格的轨迹点数总和
-  - `totalVehicleCount`：当前时间桶内所有网格的去重车辆数总和
-  - `totalFlowDensity`：当前时间桶内所有网格车辆密度总和
-  - `deltaRate`：当前时间桶相对上一时间桶的变化比例
-
-#### 响应示例
+#### 示例
 
 ```json
 {
   "success": true,
   "data": {
-    "minLon": 116.2,
-    "minLat": 39.85,
-    "maxLon": 116.5,
-    "maxLat": 40.05,
-    "regionSource": "selection",
-    "totalPointCount": 13821,
-    "totalVehicleCount": 10375,
-    "elapsedSeconds": 0.183,
+    "queryId": "density_123",
+    "regionSource": "full-map",
+    "startTime": 1202190000,
+    "endTime": 1202211600,
+    "intervalMinutes": 30,
+    "bucketSeconds": 1800,
+    "cellSizeMeters": 500,
+    "minLon": 115,
+    "minLat": 39,
+    "maxLon": 118,
+    "maxLat": 41,
     "lonStep": 0.0051,
     "latStep": 0.0045,
     "cellAreaKm2": 0.25,
@@ -328,94 +325,146 @@ Host: 127.0.0.1:8080
     "gridCount": 1512,
     "analysisScale": 72576,
     "maxVehicleDensity": 284.0,
+    "totalPointCount": 13821,
+    "totalVehicleCount": 10375,
+    "elapsedSeconds": 0.183,
+    "cacheFetchCostMs": 2,
     "buckets": [
       {
         "startTime": 1202190000,
         "endTime": 1202191799,
-        "maxVehicleCount": 71,
-        "maxVehicleDensity": 284.0,
-        "avgVehicleDensity": 32.1,
-        "totalPointCount": 1200,
-        "totalVehicleCount": 540,
-        "totalFlowDensity": 2112.4,
-        "deltaRate": 0.12,
-        "cells": [
-          {
-            "gx": 247,
-            "gy": 205,
-            "minLon": 116.31,
-            "minLat": 39.91,
-            "maxLon": 116.3151,
-            "maxLat": 39.9145,
-            "pointCount": 98,
-            "vehicleCount": 71,
-            "vehicleDensity": 284.0,
-            "flowIntensity": 392.0,
-            "deltaVehicleCount": 7,
-            "deltaVehicleDensity": 28.0,
-            "deltaRate": 0.109
-          }
-        ]
+        "nonZeroCount": 612,
+        "maxDensity": 284.0
       }
     ]
   }
 }
 ```
 
-#### 响应字段说明
+### 7.2 按桶取数据
+- 请求方法：`POST`
+- 请求路径：`/api/density/bucket`
 
-| 字段 | 说明 |
-|---|---|
-| `minLon/minLat/maxLon/maxLat` | 实际分析区域边界；前端可据此重建固定网格 |
-| `regionSource` | `selection` 表示来源于框选区域，`full-map` 表示回退到全图范围 |
-| `lonStep/latStep` | 网格在经纬度方向上的步长 |
-| `cellAreaKm2` | 单个网格的面积，单位为 km² |
-| `columnCount` | 网格列数 |
-| `rowCount` | 网格行数 |
-| `bucketCount` | 时间桶数量 |
-| `gridCount` | 网格总数，等于列数 × 行数 |
-| `analysisScale` | 分析规模，等于时间桶数 × 网格总数，用于评估数据量 |
-| `maxVehicleDensity` | 全部时间桶、全部网格中的最大车辆密度 |
-| `buckets[].startTime/endTime` | 当前时间桶的起止时间戳 |
-| `buckets[].maxVehicleCount` | 当前时间桶内单格最大车辆数 |
-| `buckets[].maxVehicleDensity` | 当前时间桶内最大车辆密度 |
-| `buckets[].avgVehicleDensity` | 当前时间桶内所有有效网格的平均车辆密度 |
-| `buckets[].totalPointCount` | 当前时间桶内轨迹点数总和 |
-| `buckets[].totalVehicleCount` | 当前时间桶内去重车辆数总和 |
-| `buckets[].totalFlowDensity` | 当前时间桶内车辆密度总和 |
-| `buckets[].deltaRate` | 当前时间桶相对上一时间桶的变化比例 |
-| `buckets[].cells[].gx/gy` | 网格索引 |
-| `buckets[].cells[].minLon/minLat/maxLon/maxLat` | 网格地理边界 |
-| `buckets[].cells[].pointCount` | 当前时间桶该网格的轨迹点数 |
-| `buckets[].cells[].vehicleCount` | 当前时间桶该网格的去重车辆数 |
-| `buckets[].cells[].vehicleDensity` | 车辆密度，单位为 车辆数/km² |
-| `buckets[].cells[].flowIntensity` | 流强度，单位为 点数/km² |
-| `buckets[].cells[].deltaVehicleCount` | 相对上一时间桶同网格的车辆数变化 |
-| `buckets[].cells[].deltaVehicleDensity` | 相对上一时间桶同网格的车辆密度变化 |
-| `buckets[].cells[].deltaRate` | 相对上一时间桶同网格的变化比例 |
+#### 请求体
 
-#### 错误场景
-- 区域字段只传部分字段，例如只传 `minLon`
-- `startTime > endTime`
-- `intervalMinutes <= 0`
-- `cellSizeMeters <= 0`
-- 配置边界异常，导致回退全图时分析范围无效
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `queryId` | string | 是 | `meta` 返回的查询 ID |
+| `bucketIndex` | number | 是 | 时间桶索引，从 `0` 开始 |
+
+#### 返回字段
+- `queryId`
+- `bucketIndex`
+- `startTime`
+- `endTime`
+- `nonZeroCount`
+- `bucketSeconds`
+- `cells`
+
+#### `cells` 格式
+- 每个元素是一个三元组：`[gx, gy, seconds]`
+- 只返回有值的格子
+
+#### 示例
+
+```json
+{
+  "success": true,
+  "data": {
+    "queryId": "density_123",
+    "bucketIndex": 0,
+    "startTime": 1202190000,
+    "endTime": 1202191799,
+    "nonZeroCount": 612,
+    "bucketSeconds": 1800,
+    "cells": [
+      [10, 8, 24.5],
+      [11, 8, 13.0]
+    ]
+  }
+}
+```
+
+#### 失败场景
+- `queryId` 缺失
+- `bucketIndex` 非整数
+- 查询缓存不存在或已过期
+- `bucketIndex` 越界
+
+### 7.3 网格时间趋势
+- 请求方法：`POST`
+- 请求路径：`/api/density/cell-trend`
+
+#### 请求体
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `queryId` | string | 是 | `meta` 返回的查询 ID |
+| `gx` | number | 是 | 网格列索引 |
+| `gy` | number | 是 | 网格行索引 |
+
+#### 返回字段
+- `queryId`
+- `gx`
+- `gy`
+- `series`
+
+#### `series` 格式
+- 每个元素是一个四元组：`[bucketIndex, startTime, endTime, seconds]`
+- 代表该网格在每个时间桶里的累计停留秒数
+
+#### 示例
+
+```json
+{
+  "success": true,
+  "data": {
+    "queryId": "density_123",
+    "gx": 10,
+    "gy": 8,
+    "series": [
+      [0, 1202190000, 1202191799, 24.5],
+      [1, 1202191800, 1202193599, 30.0]
+    ]
+  }
+}
+```
+
+#### 失败场景
+- `queryId` 缺失
+- `gx / gy` 非整数
+- 查询缓存不存在或已过期
+- `gx / gy` 越界
 
 ---
 
-## 10. 前端联调要点
+## 8. 当前接口的实现特征
 
-### 10.1 初始化顺序
-1. 调用 `GET /api/meta`
-2. 加载地图脚本
-3. 初始化地图
-4. 绑定功能按钮事件
+### 8.1 轨迹查询
+- 仍使用 JSON 返回
+- 全车视野模式已经支持 raw / cluster 两种返回方式
 
-### 10.2 模块与接口对接
-- 查询轨迹：`POST /api/trajectory`
-- 区域查找：`POST /api/region-search`
-- 车辆密度分析：`POST /api/density`
+### 8.2 区域查询
+- 仍使用 JSON 返回
+- 当前实现基于空间查询和时间筛选
 
-### 10.3 本地联调
-- 通过 `file://` 打开前端时，请求默认发往 `http://127.0.0.1:8080`
-- 通过服务端打开 `/` 时，使用同源请求
+### 8.3 密度分析
+- 当前拆成 `meta / bucket / cell-trend`
+- 仍使用 JSON 返回
+- 后端带缓存，`queryId` 会在后续请求中复用
+- 单次返回的数据量明显比旧版更小，但仍属于数值密集型接口
+
+---
+
+## 9. 已废弃或不再匹配当前代码的旧说明
+
+以下内容不再对应当前实现：
+- 单一的 `/api/density` 全量接口
+- 旧版一次性返回完整 `buckets[].cells[]` 的密度响应
+- 旧版 `DensityGridCell / DensityTimeBucket` 作为直接对外接口结构的说明
+
+如果你后续要改协议，优先改的是：
+- `/api/density/meta`
+- `/api/density/bucket`
+- `/api/density/cell-trend`
+

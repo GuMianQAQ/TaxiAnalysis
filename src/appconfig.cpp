@@ -7,6 +7,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <vector>
 #include <unordered_map>
 
 namespace fs = std::filesystem;
@@ -126,6 +127,29 @@ std::string resolvePath(const fs::path& configDir, const std::string& pathString
     return (configDir / path).lexically_normal().string();
 }
 
+std::string resolveExistingDbPath(const fs::path& configDir, const std::string& configuredPath) {
+    const std::string resolvedConfiguredPath = resolvePath(configDir, configuredPath);
+    if (!resolvedConfiguredPath.empty() && fs::exists(resolvedConfiguredPath)) {
+        return resolvedConfiguredPath;
+    }
+
+    const std::vector<std::string> fallbackCandidates = {
+        "./data/taxi_data.db",
+        "./processed_data/taxi_data.db",
+        "./taxi_data.db",
+        "./less_data/taxi_data.db"
+    };
+
+    for (const auto& candidate : fallbackCandidates) {
+        const std::string resolvedCandidate = resolvePath(configDir, candidate);
+        if (fs::exists(resolvedCandidate)) {
+            return resolvedCandidate;
+        }
+    }
+
+    return resolvedConfiguredPath;
+}
+
 } // namespace
 
 AppConfig AppConfig::load(const std::string& configPath) {
@@ -135,7 +159,7 @@ AppConfig AppConfig::load(const std::string& configPath) {
     AppConfig cfg;
 
     cfg.dataDir = resolvePath(configDir, getString(ini, "Paths", "data_dir", "./data"));
-    cfg.dbPath = resolvePath(configDir, getString(ini, "Paths", "db_path", "./taxi_data.db"));
+    cfg.dbPath = resolveExistingDbPath(configDir, getString(ini, "Paths", "db_path", "./taxi_data.db"));
     cfg.mapPath = resolvePath(configDir, getString(ini, "Paths", "map_path", "./map.html"));
 
     const std::string fallbackDataDir = (configDir / "data").lexically_normal().string();
