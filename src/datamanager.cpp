@@ -293,7 +293,58 @@ double baseGridSizeByZoom(int zoom) {
     if (zoom <= 16) return 0.002;
     return 0.001;
 }
+void distributeFlowToBuckets(std::vector<FlowBucket>& buckets,
+                             long long analysisStart,
+                             long long bucketSize,
+                             long long segStart,
+                             long long segEnd,
+                             bool isAToB) {
+    if (segEnd <= segStart || bucketSize <= 0 || buckets.empty()) {
+        return;
+    }
 
+    const long long totalDuration = segEnd - segStart;
+    const long long analysisEnd =
+        analysisStart + bucketSize * static_cast<long long>(buckets.size());
+
+    // 先裁剪到分析窗口内
+    const long long clippedStart = std::max(segStart, analysisStart);
+    const long long clippedEnd = std::min(segEnd, analysisEnd);
+
+    if (clippedEnd <= clippedStart) {
+        return;
+    }
+
+    int startBucket = static_cast<int>((clippedStart - analysisStart) / bucketSize);
+    int endBucket = static_cast<int>((clippedEnd - 1 - analysisStart) / bucketSize);
+
+    if (startBucket < 0) startBucket = 0;
+    if (endBucket >= static_cast<int>(buckets.size())) {
+        endBucket = static_cast<int>(buckets.size()) - 1;
+    }
+
+    for (int i = startBucket; i <= endBucket; ++i) {
+        const long long bucketStart = analysisStart + static_cast<long long>(i) * bucketSize;
+        const long long bucketEnd = bucketStart + bucketSize;
+
+        const long long overlapStart = std::max(segStart, bucketStart);
+        const long long overlapEnd = std::min(segEnd, bucketEnd);
+
+        if (overlapEnd <= overlapStart) {
+            continue;
+        }
+
+        const double contribution =
+            static_cast<double>(overlapEnd - overlapStart) /
+            static_cast<double>(bucketSize);
+
+        if (isAToB) {
+            buckets[static_cast<std::size_t>(i)].aToB += contribution;
+        } else {
+            buckets[static_cast<std::size_t>(i)].bToA += contribution;
+        }
+    }
+}
 std::vector<ClusterPoint> buildClustersWithGrid(const std::vector<GPSPoint>& points,
                                                 double minLon, double minLat,
                                                 double maxLon, double maxLat,
@@ -402,7 +453,193 @@ long long parseTimestamp(const std::string& text) {
     return static_cast<long long>(timegm(&tm));
 #endif
 }
+inline Rect makeRect(double minLon, double minLat,
+                     double maxLon, double maxLat) {
+    Rect r;
+    r.x = (minLon + maxLon) / 2.0;
+    r.y = (minLat + maxLat) / 2.0;
+    r.w = (maxLon - minLon) / 2.0;
+    r.h = (maxLat - minLat) / 2.0;
+    return r;
+}
 
+inline bool pointInRect(const GPSPoint& p, const Rect& r) {
+    return r.contains(p.lon, p.lat);
+}
+
+// 在 [startIdx, endIdx] 这个闭区间里找第一个 timestamp >= target 的索引
+// 如果都小于 target，返回 endIdx + 1
+int lowerBoundPointIndex(const std::vector<GPSPoint>& points,
+                         int startIdx,
+                         int endIdx,
+                         long long target) {
+    int left = startIdx;
+    int right = endIdx + 1; // 半开区间 [left, right)
+
+    while (left < right) {
+        int mid = left + (right - left) / 2;
+        if (points[mid].timestamp < target) {
+            left = mid + 1;
+        } else {
+            right = mid;
+        }
+    }
+    return left;
+}
+
+// 在 [startIdx, endIdx] 这个闭区间里找第一个 timestamp > target 的索引
+// 如果都 <= target，返回 endIdx + 1
+int upperBoundPointIndex(const std::vector<GPSPoint>& points,
+                         int startIdx,
+                         int endIdx,
+                         long long target) {
+    int left = startIdx;
+    int right = endIdx + 1; // 半开区间 [left, right)
+
+    while (left < right) {
+        int mid = left + (right - left) / 2;
+        if (points[mid].timestamp <= target) {
+            left = mid + 1;
+        } else {
+            right = mid;
+        }
+    }
+    return left;
+}
+
+// 求线段 p1->p2 与矩形边界的交点比例 t（0~1）
+// enterMode = true  : 用于 外->内，取“最早进入”
+// enterMode = false : 用于 内->外，取“最早离开”
+// 返回 true 表示找到有效交点
+bool intersectSegmentWithRectBoundary(const GPSPoint& p1,
+                                      const GPSPoint& p2,
+                                      const Rect& rect,
+                                      bool enterMode,
+                                      double& outT) {
+    const double x1 = p1.lon;
+    const double y1 = p1.lat;
+    const double x2 = p2.lon;
+    const double y2 = p2.lat;
+    const double dx = x2 - x1;
+    const double dy = y2 - y1;
+
+    const double left   = rect.x - rect.w;
+    const double right  = rect.x + rect.w;
+    const double bottom = rect.y - rect.h;
+    const double top    = rect.y + rect.h;
+
+    std::vector<double> candidates;
+    candidates.reserve(8);
+
+    auto tryPush = [&](double t) {
+        if (t < 0.0 || t > 1.0) return;
+        double x = x1 + t * dx;
+        double y = y1 + t * dy;
+
+        const double eps = 1e-9;
+        bool onVertical = (std::abs(x - left) <= eps || std::abs(x - right) <= eps) &&
+                          (y >= bottom - eps && y <= top + eps);
+        bool onHorizontal = (std::abs(y - bottom) <= eps || std::abs(y - top) <= eps) &&
+                            (x >= left - eps && x <= right + eps);
+
+        if (onVertical || onHorizontal) {
+            candidates.push_back(t);
+        }
+    };
+
+    if (std::abs(dx) > 1e-12) {
+        tryPush((left  - x1) / dx);
+        tryPush((right - x1) / dx);
+    }
+
+    if (std::abs(dy) > 1e-12) {
+        tryPush((bottom - y1) / dy);
+        tryPush((top    - y1) / dy);
+    }
+
+    if (candidates.empty()) {
+        return false;
+    }
+
+    std::sort(candidates.begin(), candidates.end());
+
+    // 去重
+    std::vector<double> uniqueTs;
+    uniqueTs.reserve(candidates.size());
+    for (double t : candidates) {
+        if (uniqueTs.empty() || std::abs(t - uniqueTs.back()) > 1e-9) {
+            uniqueTs.push_back(t);
+        }
+    }
+
+    const bool p1In = rect.contains(p1.lon, p1.lat);
+    const bool p2In = rect.contains(p2.lon, p2.lat);
+
+    // 外->内：找最早使“稍后一点在内”的交点
+    if (enterMode && !p1In && p2In) {
+        for (double t : uniqueTs) {
+            double tt = std::min(1.0, t + 1e-7);
+            double x = x1 + tt * dx;
+            double y = y1 + tt * dy;
+            if (rect.contains(x, y)) {
+                outT = t;
+                return true;
+            }
+        }
+    }
+
+    // 内->外：找最早使“稍后一点在外”的交点
+    if (!enterMode && p1In && !p2In) {
+        for (double t : uniqueTs) {
+            double tt = std::min(1.0, t + 1e-7);
+            double x = x1 + tt * dx;
+            double y = y1 + tt * dy;
+            if (!rect.contains(x, y)) {
+                outT = t;
+                return true;
+            }
+        }
+    }
+
+    // 兜底：取第一个交点
+    outT = uniqueTs.front();
+    return true;
+}
+
+long long interpolateTimestamp(const GPSPoint& p1,
+                               const GPSPoint& p2,
+                               double t) {
+    if (p2.timestamp <= p1.timestamp) {
+        return p2.timestamp;
+    }
+    if (t < 0.0) t = 0.0;
+    if (t > 1.0) t = 1.0;
+
+    return p1.timestamp +
+           static_cast<long long>(t * static_cast<double>(p2.timestamp - p1.timestamp));
+}
+
+// 估计进入目标矩形的时间：外 -> 内
+long long estimateEnterTime(const GPSPoint& prev,
+                            const GPSPoint& curr,
+                            const Rect& targetRect) {
+    double t = 0.5;
+    if (intersectSegmentWithRectBoundary(prev, curr, targetRect, true, t)) {
+        return interpolateTimestamp(prev, curr, t);
+    }
+    return prev.timestamp + (curr.timestamp - prev.timestamp) / 2;
+}
+
+// 估计离开目标矩形的时间：内 -> 外
+long long estimateLeaveTime(const GPSPoint& prev,
+                            const GPSPoint& curr,
+                            const Rect& targetRect) {
+    double t = 0.5;
+    if (intersectSegmentWithRectBoundary(prev, curr, targetRect, false, t)) {
+        return interpolateTimestamp(prev, curr, t);
+    }
+    return prev.timestamp + (curr.timestamp - prev.timestamp) / 2;
+}
 } // namespace
 
 bool DataManager::loadAllPoints(DatabaseManager& dbm) {
@@ -926,4 +1163,186 @@ int DataManager::getUniqueCountById(const std::vector<GPSPoint>& points) {
     }
 
     return count;
+}
+std::vector<FlowBucket> DataManager::queryBidirectionalFlow(
+    double minLonA, double minLatA,
+    double maxLonA, double maxLatA,
+    double minLonB, double minLatB,
+    double maxLonB, double maxLatB,
+    long long tStart,
+    long long bucketSize,
+    int bucketCount,
+    long long deltaT) {
+
+    std::vector<FlowBucket> result;
+
+    if (bucketCount <= 0 || bucketSize <= 0 || deltaT < 0) {
+        return result;
+    }
+
+    result.resize(static_cast<std::size_t>(bucketCount));
+    for (int i = 0; i < bucketCount; ++i) {
+        result[static_cast<std::size_t>(i)].bucketStart = tStart + i * bucketSize;
+        result[static_cast<std::size_t>(i)].aToB = 0;
+        result[static_cast<std::size_t>(i)].bToA = 0;
+    }
+
+    if (!quadTreeRoot || allPoints.empty() || idToRange.empty()) {
+        return result;
+    }
+
+    const long long tEnd = tStart + bucketSize * static_cast<long long>(bucketCount);
+    const long long queryStart = tStart - deltaT;
+    const long long queryEnd = tEnd + deltaT;
+
+    const Rect rectA = makeRect(minLonA, minLatA, maxLonA, maxLatA);
+    const Rect rectB = makeRect(minLonB, minLatB, maxLonB, maxLatB);
+
+    // 1. 分别查询 A、B 区域在扩展时间窗内出现过的车辆，再取交集
+    std::unordered_set<int> idsInA = querySpatioTemporalUniqueIds(
+        minLonA, minLatA, maxLonA, maxLatA, queryStart, queryEnd);
+
+    std::unordered_set<int> idsInB = querySpatioTemporalUniqueIds(
+        minLonB, minLatB, maxLonB, maxLatB, queryStart, queryEnd);
+
+    if (idsInA.empty() || idsInB.empty()) {
+        return result;
+    }
+
+    std::vector<int> candidateIds;
+    candidateIds.reserve(std::min(idsInA.size(), idsInB.size()));
+
+    if (idsInA.size() <= idsInB.size()) {
+        for (int id : idsInA) {
+            if (idsInB.find(id) != idsInB.end()) {
+                candidateIds.push_back(id);
+            }
+        }
+    } else {
+        for (int id : idsInB) {
+            if (idsInA.find(id) != idsInA.end()) {
+                candidateIds.push_back(id);
+            }
+        }
+    }
+
+    // 2. 逐车分析
+    for (int vid : candidateIds) {
+        auto it = idToRange.find(vid);
+        if (it == idToRange.end()) {
+            continue;
+        }
+
+        const VehicleRange& vr = it->second;
+        if (vr.start < 0 || vr.end < vr.start) {
+            continue;
+        }
+
+        // 利用每辆车时间有序，先二分定位到扩展时间窗口内
+        int leftIdx = lowerBoundPointIndex(allPoints, vr.start, vr.end, queryStart);
+        int rightExclusive = upperBoundPointIndex(allPoints, vr.start, vr.end, queryEnd);
+
+        if (leftIdx >= rightExclusive) {
+            continue;
+        }
+
+        // 为了检测跨边界，左边尽量多带一个点
+        if (leftIdx > vr.start) {
+            --leftIdx;
+        }
+
+        // 状态变量
+        bool pendingA2B = false;     // 是否已从 A 离开，等待进入 B
+        bool pendingB2A = false;     // 是否已从 B 离开，等待进入 A
+        long long leaveATime = -1;   // 最近一次离开 A 的时间
+        long long leaveBTime = -1;   // 最近一次离开 B 的时间
+
+        for (int i = leftIdx + 1; i < rightExclusive; ++i) {
+            const GPSPoint& prev = allPoints[i - 1];
+            const GPSPoint& curr = allPoints[i];
+
+            const bool prevInA = pointInRect(prev, rectA);
+            const bool currInA = pointInRect(curr, rectA);
+            const bool prevInB = pointInRect(prev, rectB);
+            const bool currInB = pointInRect(curr, rectB);
+
+            // -----------------------------
+            // 1) 先检测“离开 A”
+            // -----------------------------
+            if (prevInA && !currInA) {
+                leaveATime = estimateLeaveTime(prev, curr, rectA);
+                pendingA2B = true;
+
+                // 新的 A->B 开始后，之前等待中的 B->A 逻辑作废
+                pendingB2A = false;
+                leaveBTime = -1;
+            }
+
+            // -----------------------------
+            // 2) 检测“离开 B”
+            // -----------------------------
+            if (prevInB && !currInB) {
+                leaveBTime = estimateLeaveTime(prev, curr, rectB);
+                pendingB2A = true;
+
+                // 新的 B->A 开始后，之前等待中的 A->B 逻辑作废
+                pendingA2B = false;
+                leaveATime = -1;
+            }
+
+            // -----------------------------
+            // 3) 检测“进入 B”，完成 A->B
+            // -----------------------------
+            if (!prevInB && currInB) {
+                long long enterBTime = estimateEnterTime(prev, curr, rectB);
+
+                if (pendingA2B && leaveATime >= 0) {
+    const long long travelTime = enterBTime - leaveATime;
+
+    if (travelTime > 0 && travelTime <= deltaT) {
+        distributeFlowToBuckets(
+            result,
+            tStart,
+            bucketSize,
+            leaveATime,
+            enterBTime,
+            true
+        );
+    }
+}
+
+                // 无论是否成功统计，进入 B 后 A->B 这次流程结束
+                pendingA2B = false;
+                leaveATime = -1;
+            }
+
+            // -----------------------------
+            // 4) 检测“进入 A”，完成 B->A
+            // -----------------------------
+            if (!prevInA && currInA) {
+                long long enterATime = estimateEnterTime(prev, curr, rectA);
+
+                if (pendingB2A && leaveBTime >= 0) {
+    const long long travelTime = enterATime - leaveBTime;
+
+    if (travelTime > 0 && travelTime <= deltaT) {
+        distributeFlowToBuckets(
+            result,
+            tStart,
+            bucketSize,
+            leaveBTime,
+            enterATime,
+            false
+        );
+    }
+}
+
+                // 无论是否成功统计，进入 A 后 B->A 这次流程结束
+                pendingB2A = false;
+                leaveBTime = -1;
+            }
+        }
+    }
+
+    return result;
 }

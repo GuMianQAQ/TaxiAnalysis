@@ -177,7 +177,11 @@ button:focus {
     border: 1px solid rgba(136, 163, 183, 0.14);
     box-shadow: var(--shadow-soft);
 }
-
+.two-col-panels {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+}
 .stat-wide {
     grid-column: span 2;
 }

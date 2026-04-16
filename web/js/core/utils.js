@@ -11,7 +11,11 @@ function setText(id, text) {
         element.textContent = text;
     }
 }
-
+export function formatFloat2(value) {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return "0.00";
+    return num.toFixed(2);
+}
 function setInfoPanel(id, lines, empty = false) {
     const element = qs(id);
     if (!element) {

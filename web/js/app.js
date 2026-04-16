@@ -8,7 +8,7 @@ import { activateDockPanel, clearDockSelection } from "./ui/dock.js";
 import { runTrajectoryQuery } from "./features/trajectory/trajectoryService.js";
 import { runRegionQuery } from "./features/region/regionService.js";
 import { runDensityQuery, setDensityBucketIndex, stopDensityPlayback, startDensityPlayback } from "./features/density/densityService.js";
-
+import { initRegionFlowFeature } from "./features/regionFlow/regionFlow.js";
 function applyDefaultTimeValues() {
     const defaultStart = "2008-02-03T06:30";
     const defaultEnd = "2008-02-03T22:00";
@@ -16,6 +16,8 @@ function applyDefaultTimeValues() {
     qs("region-end").value = defaultEnd;
     qs("density-start").value = defaultStart;
     qs("density-end").value = defaultEnd;
+	qs("region-flow-start").value = defaultStart;
+	qs("region-flow-end").value = defaultEnd;
 }
 
 function attachButtonRipple(button) {
@@ -125,6 +127,7 @@ async function bootstrap() {
         ensureDensityOverlay();
         installDensityMapInteractions();
         installRegionSelection();
+		initRegionFlowFeature();
         bindEvents();
         applyDefaultTimeValues();
         updateMetaStatus();

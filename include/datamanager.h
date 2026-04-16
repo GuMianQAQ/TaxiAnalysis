@@ -38,6 +38,12 @@ struct ClusterPoint {
     std::vector<GPSPoint> children;
 };
 
+// 新增：双向流量桶
+struct FlowBucket {
+    long long bucketStart = 0;
+    double aToB = 0.0;
+    double bToA = 0.0;
+};
 class DataManager {
 public:
     static void loadTxtFiles(const AppConfig& config);
@@ -47,7 +53,7 @@ public:
     static const std::unordered_map<int, VehicleRange>& getIdToRange() { return idToRange; }
     static void buildQuadTree(const AppConfig& config);
     static bool hasQuadTree();
-   
+
     static std::vector<GPSPoint> querySpatial(double minLon, double minLat,
                                               double maxLon, double maxLat);
 
@@ -68,6 +74,21 @@ public:
 
     static int getUniqueCountById(const std::vector<GPSPoint>& points);
     static std::vector<GPSPoint> getPointsRangeById(int id);
+
+    // 新增：双向区域关联流量统计
+    // tStart: 起始时间
+    // bucketSize: 桶大小（例如 3600 秒）
+    // bucketCount: 桶数量（例如 48）
+    // deltaT: 最大允许通行时间（秒）
+    static std::vector<FlowBucket> queryBidirectionalFlow(
+        double minLonA, double minLatA,
+        double maxLonA, double maxLatA,
+        double minLonB, double minLatB,
+        double maxLonB, double maxLatB,
+        long long tStart,
+        long long bucketSize,
+        int bucketCount,
+        long long deltaT);
 
 private:
     static std::unordered_map<int, VehicleRange> idToRange;

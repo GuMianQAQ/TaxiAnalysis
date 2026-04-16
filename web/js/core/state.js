@@ -6,17 +6,17 @@
     selectingRegion: false,
     selectionStartPixel: null,
     selectionEndPixel: null,
- 
+
     currentBucketIndex: 0,
     densityOverlay: null,
     densityRenderModel: null,
-	densityMeta: null,
-	densityQueryId: null,
-	densityBucketCache: new Map(),
-	densityCellMaps: new Map(),
-	densityChunkMaps: new Map(),
-	densityTrendCache: new Map(),
-	densityQueryParams: null,
+    densityMeta: null,
+    densityQueryId: null,
+    densityBucketCache: new Map(),
+    densityCellMaps: new Map(),
+    densityChunkMaps: new Map(),
+    densityTrendCache: new Map(),
+    densityQueryParams: null,
     densityChunkCache: new Map(),
     densityChunkAccessTick: 0,
     densityPlayTimer: null,
@@ -45,9 +45,22 @@
     currentAllTaxiRenderMode: "cluster",
     selectionLayer: null,
     activeDockPanel: null,
-    openDockPanel: null
-};
+    openDockPanel: null,
 
+    regionFlow: {
+        selecting: false,
+        selectingTarget: null,
+        selectionLayer: null,
+        selectionStartPixel: null,
+        selectionEndPixel: null,
+        regionA: null,
+        regionB: null,
+        polygonA: null,
+        polygonB: null,
+        chart: null,
+        lastResult: null
+    }
+};
 const DENSITY_CHUNK_CELL_SIZE = 16;
 const DENSITY_CHUNK_CACHE_LIMIT = 96;
 const DENSITY_CHUNK_PREFETCH_MARGIN = 1;
