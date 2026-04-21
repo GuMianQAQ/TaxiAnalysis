@@ -1,4 +1,4 @@
-import { state } from "../../core/state.js";
+﻿import { state } from "../../core/state.js";
 import {
     qs,
     renderInfoPanel,
@@ -34,6 +34,99 @@ function makePolygon(region, style = {}) {
         strokeOpacity: style.strokeOpacity ?? 0.95,
         fillColor: style.fillColor || "#72b9f4",
         fillOpacity: style.fillOpacity ?? 0.12
+    });
+}
+
+function cloneRegion(region) {
+    if (!region) return null;
+    return {
+        minLon: Number(region.minLon),
+        minLat: Number(region.minLat),
+        maxLon: Number(region.maxLon),
+        maxLat: Number(region.maxLat)
+    };
+}
+
+function offsetRegion(originRegion, deltaLon, deltaLat) {
+    if (!originRegion) return null;
+    return {
+        minLon: originRegion.minLon + deltaLon,
+        minLat: originRegion.minLat + deltaLat,
+        maxLon: originRegion.maxLon + deltaLon,
+        maxLat: originRegion.maxLat + deltaLat
+    };
+}
+
+function lockMapIfNeeded() {
+    const rf = getRF();
+    if (rf.selecting || rf.draggingTarget) {
+        setRegionSelectionMapLocked(true);
+    } else {
+        setRegionSelectionMapLocked(false);
+    }
+}
+
+function beginRegionDrag(target, point) {
+    const rf = getRF();
+    if (rf.selecting || !point) return;
+
+    const sourceRegion = target === "A" ? rf.regionA : rf.regionB;
+    if (!sourceRegion) return;
+
+    rf.draggingTarget = target;
+    rf.dragStartPoint = { lng: Number(point.lng), lat: Number(point.lat) };
+    rf.dragOriginRegion = cloneRegion(sourceRegion);
+    hideSelectionBox();
+    lockMapIfNeeded();
+    updateModeStatus(`拖动区域 ${target}`);
+}
+
+function updateRegionDrag(point) {
+    const rf = getRF();
+    if (!rf.draggingTarget || !rf.dragStartPoint || !rf.dragOriginRegion || !point) {
+        return;
+    }
+
+    const deltaLon = Number(point.lng) - rf.dragStartPoint.lng;
+    const deltaLat = Number(point.lat) - rf.dragStartPoint.lat;
+    const nextRegion = offsetRegion(rf.dragOriginRegion, deltaLon, deltaLat);
+    if (!nextRegion) return;
+
+    if (rf.draggingTarget === "A") {
+        rf.regionA = nextRegion;
+        renderRegionA();
+    } else if (rf.draggingTarget === "B") {
+        rf.regionB = nextRegion;
+        renderRegionB();
+    }
+    updateRegionInfo();
+}
+
+function endRegionDrag() {
+    const rf = getRF();
+    if (!rf.draggingTarget) {
+        return;
+    }
+    const target = rf.draggingTarget;
+    rf.draggingTarget = null;
+    rf.dragStartPoint = null;
+    rf.dragOriginRegion = null;
+    lockMapIfNeeded();
+    updateModeStatus(`区域 ${target} 已锁定`);
+}
+
+function bindPolygonDrag(polygon, target) {
+    if (!polygon) return;
+
+    polygon.addEventListener("mousedown", (event) => {
+        if (!event || !event.point) return;
+        beginRegionDrag(target, event.point);
+        if (event.domEvent?.preventDefault) {
+            event.domEvent.preventDefault();
+        }
+        if (event.domEvent?.stopPropagation) {
+            event.domEvent.stopPropagation();
+        }
     });
 }
 
@@ -89,15 +182,36 @@ function startSelectRegion(target) {
     rf.selectingTarget = target;
     rf.selectionStartPixel = null;
     rf.selectionEndPixel = null;
+    rf.selectionRestoreRegion = cloneRegion(target === "A" ? rf.regionA : rf.regionB);
 
     ensureSelectionLayer().classList.add("active");
     hideSelectionBox();
-    setRegionSelectionMapLocked(true);
+    lockMapIfNeeded();
     updateModeStatus(`框选区域 ${target}`);
+}
+
+function previewSelectingTarget(startPixel, endPixel) {
+    const rf = getRF();
+    const target = rf.selectingTarget;
+    if (!target || !startPixel || !endPixel) {
+        return;
+    }
+
+    const region = regionFromPixels(startPixel, endPixel);
+    if (target === "A") {
+        rf.regionA = region;
+        renderRegionA();
+    } else if (target === "B") {
+        rf.regionB = region;
+        renderRegionB();
+    }
+    updateRegionInfo();
 }
 
 function cancelSelectRegion() {
     const rf = getRF();
+    const selectionTarget = rf.selectingTarget;
+    const selectionRestoreRegion = cloneRegion(rf.selectionRestoreRegion);
     rf.selecting = false;
     rf.selectingTarget = null;
     rf.selectionStartPixel = null;
@@ -107,7 +221,18 @@ function cancelSelectRegion() {
     if (rf.selectionLayer) {
         rf.selectionLayer.classList.remove("active");
     }
-    setRegionSelectionMapLocked(false);
+    rf.selectionRestoreRegion = null;
+    if (selectionTarget) {
+        if (selectionTarget === "A") {
+            rf.regionA = selectionRestoreRegion;
+            renderRegionA();
+        } else if (selectionTarget === "B") {
+            rf.regionB = selectionRestoreRegion;
+            renderRegionB();
+        }
+        updateRegionInfo();
+    }
+    lockMapIfNeeded();
     updateModeStatus("地图");
 }
 
@@ -143,6 +268,7 @@ function renderRegionA() {
         fillOpacity: 0.10
     });
     state.map.addOverlay(rf.polygonA);
+    bindPolygonDrag(rf.polygonA, "A");
 }
 
 function renderRegionB() {
@@ -159,10 +285,14 @@ function renderRegionB() {
         fillOpacity: 0.10
     });
     state.map.addOverlay(rf.polygonB);
+    bindPolygonDrag(rf.polygonB, "B");
 }
 
 function clearRegionA() {
     const rf = getRF();
+    if (rf.draggingTarget === "A") {
+        endRegionDrag();
+    }
     rf.regionA = null;
     if (rf.polygonA) {
         state.map.removeOverlay(rf.polygonA);
@@ -173,12 +303,44 @@ function clearRegionA() {
 
 function clearRegionB() {
     const rf = getRF();
+    if (rf.draggingTarget === "B") {
+        endRegionDrag();
+    }
     rf.regionB = null;
     if (rf.polygonB) {
         state.map.removeOverlay(rf.polygonB);
         rf.polygonB = null;
     }
     updateRegionInfo();
+}
+
+function clearRegionFlowState() {
+    const rf = getRF();
+    cancelSelectRegion();
+    endRegionDrag();
+    closeRegionFlowModal();
+    if (rf.polygonA && state.map) {
+        state.map.removeOverlay(rf.polygonA);
+        rf.polygonA = null;
+    }
+    if (rf.polygonB && state.map) {
+        state.map.removeOverlay(rf.polygonB);
+        rf.polygonB = null;
+    }
+    rf.regionA = null;
+    rf.regionB = null;
+    rf.lastResult = null;
+    updateRegionInfo();
+    const chart = ensureChart();
+    if (chart) {
+        chart.clear();
+        chart.setOption(emptyChartOption("等待分析"), true);
+    }
+    if (rf.modalChart) {
+        rf.modalChart.clear();
+        rf.modalChart.setOption(emptyChartOption("等待分析"), true);
+    }
+    renderInfoPanel("region-flow-info", [], "等待分析");
 }
 
 function formatRegionText(region) {
@@ -251,6 +413,44 @@ function ensureChart() {
     return rf.chart;
 }
 
+function ensureModalChart() {
+    const rf = getRF();
+    const modalEl = rf.modal?.querySelector?.("#region-flow-modal-chart");
+    if (!modalEl || !window.echarts) return null;
+    if (!rf.modalChart) {
+        rf.modalChart = echarts.init(modalEl, null, { renderer: "canvas" });
+    }
+    return rf.modalChart;
+}
+
+function bindRegionFlowModalUi() {
+    const rf = getRF();
+    const expandButton = qs("region-flow-expand");
+    if (expandButton) {
+        expandButton.addEventListener("click", () => {
+            openRegionFlowModal();
+        });
+    }
+
+    if (rf.modal) {
+        rf.modal.addEventListener("click", (event) => {
+            if (event.target?.dataset?.close === "1") {
+                closeRegionFlowModal();
+            }
+        });
+    }
+
+    if (rf.modalClose) {
+        rf.modalClose.addEventListener("click", closeRegionFlowModal);
+    }
+
+    window.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && rf.modalOpen) {
+            closeRegionFlowModal();
+        }
+    });
+}
+
 function emptyChartOption(text = "等待分析") {
     return {
         backgroundColor: "transparent",
@@ -269,40 +469,41 @@ function emptyChartOption(text = "等待分析") {
     };
 }
 
-function renderChart(data) {
-    const chart = ensureChart();
-    if (!chart) return;
-
+function buildRegionFlowChartOption(data, compact = true) {
     const buckets = data?.buckets || [];
     if (!buckets.length) {
-        chart.clear();
-        chart.setOption(emptyChartOption("暂无数据"), true);
-        return;
+        return emptyChartOption("暂无数据");
     }
 
     const xData = buckets.map(item => formatDateTime(item.bucketStart));
     const aToB = buckets.map(item => Number(item.aToB || 0));
     const bToA = buckets.map(item => Number(item.bToA || 0));
 
-    chart.setOption({
+    return {
         backgroundColor: "transparent",
+        animation: true,
+        animationDuration: compact ? 160 : 220,
         tooltip: {
-    trigger: "axis",
-    confine: true,
-    formatter: (params) => {
-        let lines = [params[0].axisValue];
-        for (const p of params) {
-            lines.push(`${p.marker}${p.seriesName}: ${Number(p.value).toFixed(2)}`);
-        }
-        return lines.join("<br/>");
-    }
-},
+            trigger: "axis",
+            confine: true,
+            formatter: (params) => {
+                const lines = [params?.[0]?.axisValue || "-"];
+                for (const p of (params || [])) {
+                    lines.push(`${p.marker}${p.seriesName}: ${Number(p.value).toFixed(2)}`);
+                }
+                return lines.join("<br/>");
+            }
+        },
         legend: { top: 6, data: ["A→B", "B→A"] },
-        grid: { left: 48, right: 20, top: 42, bottom: 42 },
+        grid: compact
+            ? { left: 48, right: 20, top: 42, bottom: 42 }
+            : { left: 58, right: 24, top: 54, bottom: 82, containLabel: true },
         xAxis: {
             type: "category",
             data: xData,
-            axisLabel: { rotate: 35 }
+            axisLabel: compact
+                ? { rotate: 35 }
+                : { rotate: 40, hideOverlap: true }
         },
         yAxis: {
             type: "value",
@@ -313,22 +514,63 @@ function renderChart(data) {
                 name: "A→B",
                 type: "line",
                 smooth: true,
-                showSymbol: false,
+                showSymbol: !compact,
+                symbolSize: compact ? 0 : 7,
                 data: aToB
             },
             {
                 name: "B→A",
                 type: "line",
                 smooth: true,
-                showSymbol: false,
+                showSymbol: !compact,
+                symbolSize: compact ? 0 : 7,
                 data: bToA
             }
         ]
-    }, true);
-
-    chart.resize();
+    };
 }
 
+function renderChart(data) {
+    const chart = ensureChart();
+    if (!chart) return;
+
+    chart.clear();
+    chart.setOption(buildRegionFlowChartOption(data, true), true);
+    chart.resize();
+
+    const rf = getRF();
+    if (rf.modalOpen && rf.modalChart) {
+        rf.modalChart.clear();
+        rf.modalChart.setOption(buildRegionFlowChartOption(data, false), true);
+        rf.modalChart.resize();
+    }
+}
+
+function openRegionFlowModal() {
+    const rf = getRF();
+    if (!rf.modal) return;
+
+    rf.modal.hidden = false;
+    rf.modalOpen = true;
+    if (rf.modalSubtitle) {
+        const count = Number(rf.lastResult?.buckets?.length || 0);
+        rf.modalSubtitle.textContent = `共 ${formatCount(count)} 个时间段`;
+    }
+
+    const modalChart = ensureModalChart();
+    if (modalChart) {
+        modalChart.clear();
+        modalChart.setOption(buildRegionFlowChartOption(rf.lastResult, false), true);
+        requestAnimationFrame(() => modalChart.resize());
+    }
+}
+
+function closeRegionFlowModal() {
+    const rf = getRF();
+    if (!rf.modal) return;
+    rf.modalOpen = false;
+    rf.modal.hidden = true;
+}
 function renderResult(data, params) {
     const summary = data.summary || {};
     renderInfoPanel("region-flow-info", [
@@ -397,10 +639,40 @@ function installRegionFlowSelection() {
             y: event.clientY - rect.top
         };
         showSelectionBox(rf.selectionStartPixel, rf.selectionEndPixel);
+        previewSelectingTarget(rf.selectionStartPixel, rf.selectionEndPixel);
         event.preventDefault();
     });
 
+    state.map.addEventListener("mousemove", (event) => {
+        if (!rf.draggingTarget || !event?.point) return;
+        updateRegionDrag(event.point);
+    });
+    window.addEventListener("mousemove", (event) => {
+        if (rf.selecting && rf.selectionStartPixel) {
+            const rect = mapElement.getBoundingClientRect();
+            rf.selectionEndPixel = {
+                x: event.clientX - rect.left,
+                y: event.clientY - rect.top
+            };
+            showSelectionBox(rf.selectionStartPixel, rf.selectionEndPixel);
+            previewSelectingTarget(rf.selectionStartPixel, rf.selectionEndPixel);
+            return;
+        }
+        if (!rf.draggingTarget) return;
+        const rect = mapElement.getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+        const point = pixelToPoint(x, y);
+        if (!point) return;
+        updateRegionDrag(point);
+    });
+
     window.addEventListener("mouseup", (event) => {
+        if (rf.draggingTarget) {
+            endRegionDrag();
+            return;
+        }
+
         if (!rf.selecting || !rf.selectionStartPixel || !rf.selectionEndPixel) return;
 
         const rect = mapElement.getBoundingClientRect();
@@ -437,6 +709,12 @@ function installRegionFlowSelection() {
 }
 
 function initRegionFlowFeature() {
+    const rf = getRF();
+    rf.modal = qs("region-flow-modal");
+    rf.modalTitle = qs("region-flow-modal-title");
+    rf.modalSubtitle = qs("region-flow-modal-subtitle");
+    rf.modalClose = qs("region-flow-modal-close");
+
     ensureSelectionLayer();
     updateRegionInfo();
 
@@ -444,8 +722,13 @@ function initRegionFlowFeature() {
     if (chart) {
         chart.setOption(emptyChartOption("等待分析"), true);
     }
+    const modalChart = ensureModalChart();
+    if (modalChart) {
+        modalChart.setOption(emptyChartOption("等待分析"), true);
+    }
 
     installRegionFlowSelection();
+    bindRegionFlowModalUi();
 
     qs("region-flow-select-a-btn")?.addEventListener("click", () => startSelectRegion("A"));
     qs("region-flow-select-b-btn")?.addEventListener("click", () => startSelectRegion("B"));
@@ -465,6 +748,10 @@ function initRegionFlowFeature() {
         if (chartRef) {
             chartRef.resize();
         }
+        const modalChartRef = getRF().modalChart;
+        if (modalChartRef && getRF().modalOpen) {
+            modalChartRef.resize();
+        }
     });
 }
 
@@ -473,5 +760,7 @@ export {
     runRegionFlowQuery,
     startSelectRegion,
     clearRegionA,
-    clearRegionB
+    clearRegionB,
+    clearRegionFlowState
 };
+

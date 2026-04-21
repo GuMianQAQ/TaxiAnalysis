@@ -3,6 +3,7 @@ import { hideSelectionBox, cancelRegionSelection } from "../map/regionSelection.
 import { clearRegionOverlay } from "../map/map.js";
 import { stopAllTaxiMode } from "../features/trajectory/trajectoryService.js";
 import { resetDensityState } from "../features/density/densityStore.js";
+import { clearRegionFlowState } from "../features/regionFlow/regionFlow.js";
 import { renderInfoPanel, updateRegionStatus, updateModeStatus } from "../core/utils.js";
 
 function setDockPanelState(name, open) {
@@ -13,6 +14,9 @@ function setDockPanelState(name, open) {
 
     if (name !== "query") {
         clearRegionOverlay();
+    }
+    if (name !== "region-flow") {
+        clearRegionFlowState();
     }
 
     document.querySelectorAll(".tool-btn[data-panel]").forEach((button) => {
@@ -55,6 +59,7 @@ function clearDockSelection() {
     renderInfoPanel("trajectory-info", [], "等待查询");
     renderInfoPanel("region-query-info", [], "等待查询");
     renderInfoPanel("density-info", [], "等待查询");
+    clearRegionFlowState();
     state.activeDockPanel = null;
     state.openDockPanel = null;
     document.querySelectorAll(".tool-btn[data-panel]").forEach((button) => {

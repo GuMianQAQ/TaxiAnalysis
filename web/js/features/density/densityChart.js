@@ -264,6 +264,18 @@ function buildDensityModalOption(trend) {
     }
 
     const labelCount = trend.labels.length;
+    const isCrossDay = Boolean(
+        trend.fullLabels?.length &&
+        String(trend.fullLabels[0] || "").slice(0, 5) !== String(trend.fullLabels[trend.fullLabels.length - 1] || "").slice(0, 5)
+    );
+    const axisLabels = trend.labels.map((label, index) => {
+        if (!isCrossDay) {
+            return label;
+        }
+        const fullLabel = String(trend.fullLabels?.[index] || "");
+        const startPart = fullLabel.split(" - ")[0] || fullLabel;
+        return startPart || label;
+    });
     const step = labelCount > 8 ? Math.ceil(labelCount / 6) : 1;
 
     return {
@@ -320,7 +332,7 @@ function buildDensityModalOption(trend) {
         xAxis: {
             type: "category",
             boundaryGap: false,
-            data: trend.labels,
+            data: axisLabels,
             axisTick: {
                 show: false
             },
@@ -335,7 +347,14 @@ function buildDensityModalOption(trend) {
                 interval: labelCount > 8 ? step - 1 : 0,
                 hideOverlap: true,
                 rotate: 40,
-                formatter: (value) => String(value)
+                formatter: (value) => {
+                    if (!isCrossDay) {
+                        return String(value);
+                    }
+                    const text = String(value);
+                    const parts = text.split(" ");
+                    return parts.length >= 2 ? `${parts[0]}\n${parts[1]}` : text;
+                }
             },
             splitLine: {
                 show: false

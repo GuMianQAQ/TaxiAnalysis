@@ -53,11 +53,21 @@
         selectionLayer: null,
         selectionStartPixel: null,
         selectionEndPixel: null,
+        selectionRestoreRegion: null,
         regionA: null,
         regionB: null,
         polygonA: null,
         polygonB: null,
+        draggingTarget: null,
+        dragStartPoint: null,
+        dragOriginRegion: null,
         chart: null,
+        modal: null,
+        modalChart: null,
+        modalTitle: null,
+        modalSubtitle: null,
+        modalClose: null,
+        modalOpen: false,
         lastResult: null
     }
 };
