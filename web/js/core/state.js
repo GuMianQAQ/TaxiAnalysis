@@ -70,60 +70,16 @@
         modalOpen: false,
         lastResult: null
     },
-
-    singleRegionFlow: {
-        selecting: false,
-        selectionLayer: null,
-        selectionStartPixel: null,
-        selectionEndPixel: null,
-        region: null,
-        polygon: null,
-        dragging: false,
-        dragStartPoint: null,
-        dragOriginRegion: null,
-        chart: null,
-        modal: null,
-        modalChart: null,
-        modalTitle: null,
-        modalSubtitle: null,
-        modalClose: null,
-        modalOpen: false,
-        lastResult: null
-    },
-
-    frequentPathRegion: {
-        selecting: false,
-        selectingTarget: null,
-        selectionLayer: null,
-        selectionStartPixel: null,
-        selectionEndPixel: null,
-        regionA: null,
-        regionB: null,
-        polygonA: null,
-        polygonB: null,
-        draggingTarget: null,
-        dragStartPoint: null,
-        dragOriginRegion: null,
-        lastResult: null
-    },
-
-    fastestPathRegion: {
-        selecting: false,
-        selectingTarget: null,
-        selectionLayer: null,
-        selectionStartPixel: null,
-        selectionEndPixel: null,
-        regionA: null,
-        regionB: null,
-        polygonA: null,
-        polygonB: null,
-        draggingTarget: null,
-        dragStartPoint: null,
-        dragOriginRegion: null,
-        currentBucketIndex: 0,
-        playTimer: null,
-        lastResult: null
-    }
+	regionFlowState: {
+    selecting: false,
+    selectionLayer: null,
+    selectionStartPixel: null,
+    selectionEndPixel: null,
+    region: null,
+    polygon: null,
+    chart: null,
+    lastResult: null
+}
 };
 const DENSITY_CHUNK_CELL_SIZE = 16;
 const DENSITY_CHUNK_CACHE_LIMIT = 96;

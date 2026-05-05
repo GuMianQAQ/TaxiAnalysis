@@ -1359,18 +1359,16 @@ server.Post("/api/region-flow/bidirectional", [](const httplib::Request& req, ht
         {"maxLat", maxLatB}
     };
 
-    long long totalAtoB = 0;
-    long long totalBtoA = 0;
+    long long totalAtoB = buckets.aToB;
+    long long totalBtoA = buckets.bToA;
     json arr = json::array();
 
-    for (const auto& bucket : buckets) {
+    for (const auto& bucket : buckets.result) {
         arr.push_back({
             {"bucketStart", bucket.bucketStart},
             {"aToB", bucket.aToB},
             {"bToA", bucket.bToA}
         });
-        totalAtoB += bucket.aToB;
-        totalBtoA += bucket.bToA;
     }
 
     data["buckets"] = std::move(arr);
@@ -1395,168 +1393,6 @@ server.Post("/api/region-flow/bidirectional", [](const httplib::Request& req, ht
             << ", deltaT:" << deltaT
             << ", totalAtoB:" << totalAtoB
             << ", totalBtoA:" << totalBtoA
-            << ")" << std::endl;
-
-    res.set_content(resp.dump(), "application/json; charset=utf-8");
-});
-
-//新增：单区域关联流量统计（F6功能）
-server.Post("/api/region-flow/single", [this](const httplib::Request& req, httplib::Response& res) {
-    const auto t_start = std::chrono::steady_clock::now();
-
-    json body;
-    std::string errorMessage;
-    if (!parseJsonBody(req, body, errorMessage)) {
-        res.status = 400;
-        res.set_content(
-            makeError("INVALID_JSON", errorMessage).dump(),
-            "application/json; charset=utf-8"
-        );
-        return;
-    }
-
-    auto tryReadDouble = [&](const char* key, double& out) {
-        if (!body.contains(key) || !body[key].is_number()) return false;
-        out = body[key].get<double>();
-        return true;
-    };
-
-    auto tryReadInt64 = [&](const char* key, long long& out) {
-        if (!body.contains(key) || !body[key].is_number_integer()) return false;
-        out = body[key].get<long long>();
-        return true;
-    };
-
-    auto tryReadInt = [&](const char* key, int& out) {
-        if (!body.contains(key) || !body[key].is_number_integer()) return false;
-        out = body[key].get<int>();
-        return true;
-    };
-
-    double minLon = 0.0;
-    double minLat = 0.0;
-    double maxLon = 0.0;
-    double maxLat = 0.0;
-    long long tStartValue = 0;
-    long long bucketSize = 0;
-    long long deltaT = 0;
-    int bucketCount = 0;
-
-    if (!tryReadDouble("minLon", minLon) ||
-        !tryReadDouble("minLat", minLat) ||
-        !tryReadDouble("maxLon", maxLon) ||
-        !tryReadDouble("maxLat", maxLat) ||
-        !tryReadInt64("tStart", tStartValue) ||
-        !tryReadInt64("bucketSize", bucketSize) ||
-        !tryReadInt("bucketCount", bucketCount) ||
-        !tryReadInt64("deltaT", deltaT)) {
-        res.status = 400;
-        res.set_content(
-            makeError(
-                "INVALID_ARGUMENT",
-                "required fields: minLon,minLat,maxLon,maxLat,tStart,bucketSize,bucketCount,deltaT"
-            ).dump(),
-            "application/json; charset=utf-8"
-        );
-        return;
-    }
-
-    if (minLon > maxLon || minLat > maxLat) {
-        res.status = 400;
-        res.set_content(
-            makeError("INVALID_ARGUMENT", "invalid target rectangle bounds").dump(),
-            "application/json; charset=utf-8"
-        );
-        return;
-    }
-
-    if (bucketSize <= 0 || bucketCount <= 0 || deltaT < 0) {
-        res.status = 400;
-        res.set_content(
-            makeError("INVALID_ARGUMENT", "bucketSize>0, bucketCount>0, deltaT>=0 required").dump(),
-            "application/json; charset=utf-8"
-        );
-        return;
-    }
-
-    if (!DataManager::hasQuadTree()) {
-        res.status = 503;
-        res.set_content(
-            makeError("SERVICE_UNAVAILABLE", "quadtree not ready").dump(),
-            "application/json; charset=utf-8"
-        );
-        return;
-    }
-
-    const auto buckets = DataManager::querySingleRegionFlow(
-        minLon, minLat,
-        maxLon, maxLat,
-        m_config.minLon, m_config.minLat,
-        m_config.maxLon, m_config.maxLat,
-        tStartValue,
-        bucketSize,
-        bucketCount,
-        deltaT
-    );
-
-    json data;
-    data["tStart"] = tStartValue;
-    data["bucketSize"] = bucketSize;
-    data["bucketCount"] = bucketCount;
-    data["deltaT"] = deltaT;
-
-    data["targetRegion"] = {
-        {"minLon", minLon},
-        {"minLat", minLat},
-        {"maxLon", maxLon},
-        {"maxLat", maxLat}
-    };
-
-    data["globalBounds"] = {
-        {"minLon", m_config.minLon},
-        {"minLat", m_config.minLat},
-        {"maxLon", m_config.maxLon},
-        {"maxLat", m_config.maxLat}
-    };
-
-    double totalIncoming = 0.0;
-    double totalOutgoing = 0.0;
-    json arr = json::array();
-
-    for (const auto& bucket : buckets) {
-        arr.push_back({
-            {"bucketStart", bucket.bucketStart},
-            {"incoming", bucket.incoming},
-            {"outgoing", bucket.outgoing}
-        });
-
-        totalIncoming += bucket.incoming;
-        totalOutgoing += bucket.outgoing;
-    }
-
-    data["buckets"] = std::move(arr);
-    data["summary"] = {
-        {"totalIncoming", totalIncoming},
-        {"totalOutgoing", totalOutgoing},
-        {"netFlow", totalIncoming - totalOutgoing}
-    };
-
-    const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now() - t_start
-    ).count();
-
-    data["elapsedMs"] = totalMs;
-
-    json resp;
-    resp["success"] = true;
-    resp["data"] = std::move(data);
-
-    Debug() << "[region-flow-single] " << totalMs << "ms"
-            << " (bucketCount:" << bucketCount
-            << ", bucketSize:" << bucketSize
-            << ", deltaT:" << deltaT
-            << ", totalIncoming:" << totalIncoming
-            << ", totalOutgoing:" << totalOutgoing
             << ")" << std::endl;
 
     res.set_content(resp.dump(), "application/json; charset=utf-8");
@@ -1930,6 +1766,144 @@ server.Post("/api/fastest-paths/region-to-region", [](const httplib::Request& re
             << " (bucketCount:" << bucketCount
             << ", bucketSize:" << bucketSize
             << ", deltaT:" << deltaT
+            << ")" << std::endl;
+
+    res.set_content(resp.dump(), "application/json; charset=utf-8");
+});
+
+server.Post("/api/region-flow/state", [](const httplib::Request& req, httplib::Response& res) {
+    const auto t_start = std::chrono::steady_clock::now();
+
+    json body;
+    std::string errorMessage;
+    if (!parseJsonBody(req, body, errorMessage)) {
+        res.status = 400;
+        res.set_content(makeError("INVALID_JSON", errorMessage).dump(), "application/json; charset=utf-8");
+        Debug() << "[region-flow-state] FAILED (parse error)" << std::endl;
+        return;
+    }
+
+    auto tryReadDouble = [&](const char* key, double& out) {
+        if (!body.contains(key) || !body[key].is_number()) return false;
+        out = body[key].get<double>();
+        return true;
+    };
+
+    auto tryReadInt64 = [&](const char* key, long long& out) {
+        if (!body.contains(key) || !body[key].is_number_integer()) return false;
+        out = body[key].get<long long>();
+        return true;
+    };
+
+    auto tryReadInt = [&](const char* key, int& out) {
+        if (!body.contains(key) || !body[key].is_number_integer()) return false;
+        out = body[key].get<int>();
+        return true;
+    };
+
+    double minLon = 0.0, minLat = 0.0, maxLon = 0.0, maxLat = 0.0;
+    long long tStartValue = 0;
+    long long bucketSize = 0;
+    int bucketCount = 0;
+
+    if (!tryReadDouble("minLon", minLon) ||
+        !tryReadDouble("minLat", minLat) ||
+        !tryReadDouble("maxLon", maxLon) ||
+        !tryReadDouble("maxLat", maxLat) ||
+        !tryReadInt64("tStart", tStartValue) ||
+        !tryReadInt64("bucketSize", bucketSize) ||
+        !tryReadInt("bucketCount", bucketCount)) {
+        res.status = 400;
+        res.set_content(
+            makeError("INVALID_ARGUMENT",
+                      "required fields: minLon,minLat,maxLon,maxLat,tStart,bucketSize,bucketCount").dump(),
+            "application/json; charset=utf-8"
+        );
+        return;
+    }
+
+    if (minLon > maxLon || minLat > maxLat) {
+        res.status = 400;
+        res.set_content(
+            makeError("INVALID_ARGUMENT", "invalid rectangle bounds").dump(),
+            "application/json; charset=utf-8"
+        );
+        return;
+    }
+
+    if (bucketSize <= 0 || bucketCount <= 0) {
+        res.status = 400;
+        res.set_content(
+            makeError("INVALID_ARGUMENT", "bucketSize>0, bucketCount>0 required").dump(),
+            "application/json; charset=utf-8"
+        );
+        return;
+    }
+
+    if (!DataManager::hasQuadTree()) {
+        res.status = 503;
+        res.set_content(
+            makeError("SERVICE_UNAVAILABLE", "quadtree not ready").dump(),
+            "application/json; charset=utf-8"
+        );
+        return;
+    }
+
+    const auto result = DataManager::queryRegionFlowState(
+        minLon, minLat,
+        maxLon, maxLat,
+        tStartValue,
+        bucketSize,
+        bucketCount
+    );
+
+    json data;
+    data["tStart"] = tStartValue;
+    data["bucketSize"] = bucketSize;
+    data["bucketCount"] = bucketCount;
+
+    data["region"] = {
+        {"minLon", minLon},
+        {"minLat", minLat},
+        {"maxLon", maxLon},
+        {"maxLat", maxLat}
+    };
+
+    json arr = json::array();
+
+    for (const auto& bucket : result.result) {
+        arr.push_back({
+            {"bucketStart", bucket.bucketStart},
+            {"entering", bucket.entering},
+            {"leaving", bucket.leaving},
+            {"inside", bucket.inside},
+            {"netFlow", bucket.entering - bucket.leaving}
+        });
+    }
+
+    data["buckets"] = std::move(arr);
+
+    data["summary"] = {
+        {"totalEntering", result.totalEntering},
+        {"totalLeaving", result.totalLeaving},
+        {"netEntering", result.totalEntering - result.totalLeaving}
+    };
+
+    const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t_start
+    ).count();
+
+    data["elapsedMs"] = totalMs;
+
+    json resp;
+    resp["success"] = true;
+    resp["data"] = std::move(data);
+
+    Debug() << "[region-flow-state] " << totalMs << "ms"
+            << " (bucketCount:" << bucketCount
+            << ", bucketSize:" << bucketSize
+            << ", totalEntering:" << result.totalEntering
+            << ", totalLeaving:" << result.totalLeaving
             << ")" << std::endl;
 
     res.set_content(resp.dump(), "application/json; charset=utf-8");

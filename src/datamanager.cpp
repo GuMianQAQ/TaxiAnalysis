@@ -88,7 +88,84 @@ namespace {
         std::chrono::steady_clock::now() - start).count();
     return true;
 }
+// 点在区域内
+bool inRect(const GPSPoint& p,
+                   double minLon, double minLat,
+                   double maxLon, double maxLat) {
+    return p.lon >= minLon && p.lon <= maxLon &&
+           p.lat >= minLat && p.lat <= maxLat;
+}
+long long interpolateCrossTime(const GPSPoint& a,
+                                      const GPSPoint& b,
+                                      double minLon, double minLat,
+                                      double maxLon, double maxLat) {
+    double bestRatio = 1.0;
 
+    const double dx = b.lon - a.lon;
+    const double dy = b.lat - a.lat;
+
+    auto checkRatio = [&](double ratio) {
+        if (ratio >= 0.0 && ratio <= 1.0) {
+            bestRatio = std::min(bestRatio, ratio);
+        }
+    };
+
+    if (dx != 0.0) {
+        checkRatio((minLon - a.lon) / dx);
+        checkRatio((maxLon - a.lon) / dx);
+    }
+
+    if (dy != 0.0) {
+        checkRatio((minLat - a.lat) / dy);
+        checkRatio((maxLat - a.lat) / dy);
+    }
+
+    return a.timestamp +
+           static_cast<long long>((b.timestamp - a.timestamp) * bestRatio);
+}
+void distributeInsideToBuckets(std::vector<RegionBucket>& buckets,
+                                      long long analysisStart,
+                                      long long bucketSize,
+                                      long long stayStart,
+                                      long long stayEnd) {
+    if (stayEnd <= stayStart || bucketSize <= 0 || buckets.empty()) {
+        return;
+    }
+
+    long long analysisEnd =
+        analysisStart + bucketSize * static_cast<long long>(buckets.size());
+
+    long long clippedStart = std::max(stayStart, analysisStart);
+    long long clippedEnd = std::min(stayEnd, analysisEnd);
+
+    if (clippedEnd <= clippedStart) {
+        return;
+    }
+
+    int startBucket =
+        static_cast<int>((clippedStart - analysisStart) / bucketSize);
+    int endBucket =
+        static_cast<int>((clippedEnd - 1 - analysisStart) / bucketSize);
+
+    startBucket = std::max(startBucket, 0);
+    endBucket = std::min(endBucket, static_cast<int>(buckets.size()) - 1);
+
+    for (int i = startBucket; i <= endBucket; ++i) {
+        long long bucketStart = analysisStart + i * bucketSize;
+        long long bucketEnd = bucketStart + bucketSize;
+
+        long long overlapStart = std::max(clippedStart, bucketStart);
+        long long overlapEnd = std::min(clippedEnd, bucketEnd);
+
+        if (overlapEnd <= overlapStart) {
+            continue;
+        }
+
+        buckets[i].inside +=
+            static_cast<double>(overlapEnd - overlapStart) /
+            static_cast<double>(bucketSize);
+    }
+}
 bool isSortedByIdAndTime(const std::vector<GPSPoint>& points, int& badIndex)
 {
     badIndex = -1;
@@ -294,6 +371,7 @@ double baseGridSizeByZoom(int zoom) {
     return 0.001;
 }
 void distributeFlowToBuckets(std::vector<FlowBucket>& buckets,
+                             double& vehiclescount,
                              long long analysisStart,
                              long long bucketSize,
                              long long segStart,
@@ -337,7 +415,7 @@ void distributeFlowToBuckets(std::vector<FlowBucket>& buckets,
         const double contribution =
             static_cast<double>(overlapEnd - overlapStart) /
             static_cast<double>(bucketSize);
-
+        vehiclescount += static_cast<double>(overlapEnd - overlapStart) / totalDuration;
         if (isAToB) {
             buckets[static_cast<std::size_t>(i)].aToB += contribution;
         } else {
@@ -1245,7 +1323,8 @@ int DataManager::getUniqueCountById(const std::vector<GPSPoint>& points) {
 
     return count;
 }
-std::vector<FlowBucket> DataManager::queryBidirectionalFlow(
+
+FlowBucketResult DataManager::queryBidirectionalFlow(
     double minLonA, double minLatA,
     double maxLonA, double maxLatA,
     double minLonB, double minLatB,
@@ -1254,13 +1333,14 @@ std::vector<FlowBucket> DataManager::queryBidirectionalFlow(
     long long bucketSize,
     int bucketCount,
     long long deltaT) {
-
-    std::vector<FlowBucket> result;
-
+    FlowBucketResult response;
+    
     if (bucketCount <= 0 || bucketSize <= 0 || deltaT < 0) {
-        return result;
+        return response;
     }
-
+    std::vector<FlowBucket> &result = response.result;
+    double& A2B=response.aToB;
+    double& B2A=response.bToA;
     result.resize(static_cast<std::size_t>(bucketCount));
     for (int i = 0; i < bucketCount; ++i) {
         result[static_cast<std::size_t>(i)].bucketStart = tStart + i * bucketSize;
@@ -1269,7 +1349,7 @@ std::vector<FlowBucket> DataManager::queryBidirectionalFlow(
     }
 
     if (!quadTreeRoot || allPoints.empty() || idToRange.empty()) {
-        return result;
+        return response;
     }
 
     const long long tEnd = tStart + bucketSize * static_cast<long long>(bucketCount);
@@ -1287,7 +1367,7 @@ std::vector<FlowBucket> DataManager::queryBidirectionalFlow(
         minLonB, minLatB, maxLonB, maxLatB, queryStart, queryEnd);
 
     if (idsInA.empty() || idsInB.empty()) {
-        return result;
+        return response;
     }
 
     std::vector<int> candidateIds;
@@ -1299,7 +1379,8 @@ std::vector<FlowBucket> DataManager::queryBidirectionalFlow(
                 candidateIds.push_back(id);
             }
         }
-    } else {
+    } 
+    else {
         for (int id : idsInB) {
             if (idsInA.find(id) != idsInA.end()) {
                 candidateIds.push_back(id);
@@ -1378,19 +1459,20 @@ std::vector<FlowBucket> DataManager::queryBidirectionalFlow(
                 long long enterBTime = estimateEnterTime(prev, curr, rectB);
 
                 if (pendingA2B && leaveATime >= 0) {
-    const long long travelTime = enterBTime - leaveATime;
+                    const long long travelTime = enterBTime - leaveATime;
 
-    if (travelTime > 0 && travelTime <= deltaT) {
-        distributeFlowToBuckets(
-            result,
-            tStart,
-            bucketSize,
-            leaveATime,
-            enterBTime,
-            true
-        );
-    }
-}
+                    if (travelTime > 0 && travelTime <= deltaT) {
+                        distributeFlowToBuckets(
+                            result,
+                            A2B,
+                            tStart,
+                            bucketSize,
+                            leaveATime,
+                            enterBTime,
+                            true
+                        );
+                    }
+                }
 
                 // 无论是否成功统计，进入 B 后 A->B 这次流程结束
                 pendingA2B = false;
@@ -1404,19 +1486,20 @@ std::vector<FlowBucket> DataManager::queryBidirectionalFlow(
                 long long enterATime = estimateEnterTime(prev, curr, rectA);
 
                 if (pendingB2A && leaveBTime >= 0) {
-    const long long travelTime = enterATime - leaveBTime;
+                    const long long travelTime = enterATime - leaveBTime;
 
-    if (travelTime > 0 && travelTime <= deltaT) {
-        distributeFlowToBuckets(
-            result,
-            tStart,
-            bucketSize,
-            leaveBTime,
-            enterATime,
-            false
-        );
-    }
-}
+                if (travelTime > 0 && travelTime <= deltaT) {
+                    distributeFlowToBuckets(
+                        result,
+                        B2A,
+                        tStart,
+                        bucketSize,
+                        leaveBTime,
+                        enterATime,
+                        false
+                    );
+                    }
+                }
 
                 // 无论是否成功统计，进入 A 后 B->A 这次流程结束
                 pendingB2A = false;
@@ -1425,89 +1508,94 @@ std::vector<FlowBucket> DataManager::queryBidirectionalFlow(
         }
     }
 
-    return result;
+    return response;
 }
 
-// 3. 基于双向流量查询，统计单区域流入/流出流量
-std::vector<SingleRegionFlowBucket> DataManager::querySingleRegionFlow(
-    double targetMinLon, double targetMinLat,
-    double targetMaxLon, double targetMaxLat,
-    double globalMinLon, double globalMinLat,
-    double globalMaxLon, double globalMaxLat,
+RegionFlowStateResult DataManager::queryRegionFlowState(
+    double minLon, double minLat,
+    double maxLon, double maxLat,
     long long tStart,
     long long bucketSize,
-    int bucketCount,
-    long long deltaT) {
+    int bucketCount) {
 
-    std::vector<SingleRegionFlowBucket> result;
+    RegionFlowStateResult ans;
 
-    if (bucketCount <= 0 || bucketSize <= 0 || deltaT < 0) {
-        return result;
+    if (bucketSize <= 0 || bucketCount <= 0) {
+        return ans;
     }
 
-    RegionRect target{
-        targetMinLon, targetMinLat,
-        targetMaxLon, targetMaxLat
-    };
+    ans.result.resize(bucketCount);
 
-    RegionRect globalBounds{
-        globalMinLon, globalMinLat,
-        globalMaxLon, globalMaxLat
-    };
-
-    if (!isValidRegionRect(target) || !isValidRegionRect(globalBounds)) {
-        return result;
-    }
-
-    // 目标区域必须与全局范围有交集；否则这个分析没有意义
-    if (!rectsOverlap(target, globalBounds) &&
-        !(target.minLon >= globalBounds.minLon &&
-          target.maxLon <= globalBounds.maxLon &&
-          target.minLat >= globalBounds.minLat &&
-          target.maxLat <= globalBounds.maxLat)) {
-        return result;
-    }
-
-    result.resize(static_cast<std::size_t>(bucketCount));
     for (int i = 0; i < bucketCount; ++i) {
-        result[static_cast<std::size_t>(i)].bucketStart = tStart + i * bucketSize;
-        result[static_cast<std::size_t>(i)].incoming = 0.0;
-        result[static_cast<std::size_t>(i)].outgoing = 0.0;
+        ans.result[i].bucketStart = tStart + i * bucketSize;
     }
 
-    const std::vector<RegionRect> outerRegions = buildOuterRegions(target, globalBounds);
-    if (outerRegions.empty()) {
-        return result;
-    }
+    long long tEnd = tStart + bucketSize * bucketCount;
 
-    for (const auto& outer : outerRegions) {
-        const std::vector<FlowBucket> partial = queryBidirectionalFlow(
-            target.minLon, target.minLat,
-            target.maxLon, target.maxLat,
-            outer.minLon, outer.minLat,
-            outer.maxLon, outer.maxLat,
-            tStart,
-            bucketSize,
-            bucketCount,
-            deltaT
-        );
-
-        if (partial.size() != result.size()) {
+    for (const auto& [id, range] : idToRange) {
+        if (range.end <= range.start) {
             continue;
         }
 
-        for (std::size_t i = 0; i < result.size(); ++i) {
-            // F5 里 A=target, B=outer
-            // 所以：
-            // A->B = 目标区域流出
-            // B->A = 目标区域流入
-            result[i].outgoing += partial[i].aToB;
-            result[i].incoming += partial[i].bToA;
+        for (int i = range.start + 1; i <= range.end; ++i) {
+            const GPSPoint& prev = allPoints[i - 1];
+            const GPSPoint& curr = allPoints[i];
+
+            if (curr.timestamp <= prev.timestamp) {
+                continue;
+            }
+
+            bool prevIn = inRect(prev, minLon, minLat, maxLon, maxLat);
+            bool currIn = inRect(curr, minLon, minLat, maxLon, maxLat);
+
+            if (prevIn && currIn) {
+                // 整段都在区域内：贡献 inside
+                distributeInsideToBuckets(
+                    ans.result, tStart, bucketSize,
+                    prev.timestamp, curr.timestamp);
+            }
+            else if (!prevIn && currIn) {
+                // 从外到内：进入事件
+                long long crossTime = interpolateCrossTime(
+                    prev, curr, minLon, minLat, maxLon, maxLat);
+
+                if (crossTime >= tStart && crossTime < tEnd) {
+                    int bucketIndex =
+                        static_cast<int>((crossTime - tStart) / bucketSize);
+
+                    ans.result[bucketIndex].entering += 1.0;
+                    ans.totalEntering += 1.0;
+                }
+
+                // 进入后到 curr.timestamp 这段在区域内
+                distributeInsideToBuckets(
+                    ans.result, tStart, bucketSize,
+                    crossTime, curr.timestamp);
+            }
+            else if (prevIn && !currIn) {
+                // 从内到外：离开事件
+                long long crossTime = interpolateCrossTime(
+                    prev, curr, minLon, minLat, maxLon, maxLat);
+
+                if (crossTime >= tStart && crossTime < tEnd) {
+                    int bucketIndex =
+                        static_cast<int>((crossTime - tStart) / bucketSize);
+
+                    ans.result[bucketIndex].leaving += 1.0;
+                    ans.totalLeaving += 1.0;
+                }
+
+                // prev.timestamp 到离开前这段在区域内
+                distributeInsideToBuckets(
+                    ans.result, tStart, bucketSize,
+                    prev.timestamp, crossTime);
+            }
         }
     }
 
-    return result;
+    return ans;
 }
+
 
 std::vector<FastestPathBucket> DataManager::queryFastestPathsBetweenRegions(
     double minLonA, double minLatA,

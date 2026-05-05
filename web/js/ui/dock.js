@@ -5,7 +5,7 @@ import { stopAllTaxiMode } from "../features/trajectory/trajectoryService.js";
 import { resetDensityState } from "../features/density/densityStore.js";
 import { clearRegionFlowState } from "../features/regionFlow/regionFlow.js";
 import { renderInfoPanel, updateRegionStatus, updateModeStatus } from "../core/utils.js";
-
+import { clearRegionFlowStateAnalysis } from "../features/regionFlow/regionFlowState.js";
 function setDockPanelState(name, open) {
     hideSelectionBox();
     if (state.selectingRegion) {
@@ -15,6 +15,9 @@ function setDockPanelState(name, open) {
     if (name !== "query") {
         clearRegionOverlay();
     }
+	if (name !== "region-flow-state") {
+    clearRegionFlowStateAnalysis();
+}
     if (name !== "region-flow") {
         clearRegionFlowState();
     }
@@ -47,12 +50,14 @@ function activateDockPanel(name) {
 
 function clearDockSelection() {
     hideSelectionBox();
+	
     if (state.selectingRegion) {
         cancelRegionSelection();
     }
     stopAllTaxiMode(true);
     state.region = null;
     clearRegionOverlay();
+	clearRegionFlowStateAnalysis();
     resetDensityState();
     updateRegionStatus();
     updateModeStatus("地图");

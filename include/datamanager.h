@@ -44,6 +44,23 @@ struct FlowBucket {
     double aToB = 0.0;
     double bToA = 0.0;
 };
+struct FlowBucketResult {
+    double aToB = 0.0;
+    double bToA = 0.0;
+    std::vector<FlowBucket> result;
+};
+struct RegionBucket {
+    long long bucketStart = 0;
+    double entering = 0.0;
+    double leaving = 0.0;
+    double inside = 0.0;
+};
+
+struct RegionFlowStateResult {
+    double totalEntering = 0.0;
+    double totalLeaving = 0.0;
+    std::vector<RegionBucket> result;
+};
 
 struct FastestPathBucket {
     long long bucketStart = 0;
@@ -69,6 +86,40 @@ struct SingleRegionFlowBucket {
     double outgoing = 0.0; // 目标区域 -> 其他区域
 };
 
+struct FlowBucketResult {
+    double aToB = 0.0;
+    double bToA = 0.0;
+    std::vector<FlowBucket> result;
+};
+struct RegionBucket {
+    long long bucketStart = 0;
+    double entering = 0.0;
+    double leaving = 0.0;
+    double inside = 0.0;
+};
+
+struct RegionFlowStateResult {
+    double totalEntering = 0.0;
+    double totalLeaving = 0.0;
+    std::vector<RegionBucket> result;
+};
+struct FlowBucketResult {
+    double aToB = 0.0;
+    double bToA = 0.0;
+    std::vector<FlowBucket> result;
+};
+struct RegionBucket {
+    long long bucketStart = 0;
+    double entering = 0.0;
+    double leaving = 0.0;
+    double inside = 0.0;
+};
+
+struct RegionFlowStateResult {
+    double totalEntering = 0.0;
+    double totalLeaving = 0.0;
+    std::vector<RegionBucket> result;
+};
 class DataManager {
 public:
     static void loadTxtFiles(const AppConfig& config);
@@ -105,7 +156,7 @@ public:
     // bucketSize: 桶大小（例如 3600 秒）
     // bucketCount: 桶数量（例如 48）
     // deltaT: 最大允许通行时间（秒）
-    static std::vector<FlowBucket> queryBidirectionalFlow(
+    static FlowBucketResult queryBidirectionalFlow(
         double minLonA, double minLatA,
         double maxLonA, double maxLatA,
         double minLonB, double minLatB,
@@ -114,17 +165,12 @@ public:
         long long bucketSize,
         int bucketCount,
         long long deltaT);
-
-    //新增：单区域关联流量统计（F6功能）
-        static std::vector<SingleRegionFlowBucket> querySingleRegionFlow(
-        double targetMinLon, double targetMinLat,
-        double targetMaxLon, double targetMaxLat,
-        double globalMinLon, double globalMinLat,
-        double globalMaxLon, double globalMaxLat,
+    static RegionFlowStateResult queryRegionFlowState(
+        double minLon, double minLat,
+        double maxLon, double maxLat,
         long long tStart,
         long long bucketSize,
-        int bucketCount,
-        long long deltaT);
+        int bucketCount);
 
     static std::vector<FastestPathBucket> queryFastestPathsBetweenRegions(
         double minLonA, double minLatA,
@@ -135,6 +181,13 @@ public:
         long long bucketSize,
         int bucketCount,
         long long deltaT);
+    
+
+
+    
+
+
+    
 
 
 private:

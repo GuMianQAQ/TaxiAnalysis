@@ -8,7 +8,6 @@
 #include "datamanager.h"
 
 struct sqlite3;
-
 class DatabaseManager {
 public:
     explicit DatabaseManager(const std::string& dbName = "taxi_data.db");

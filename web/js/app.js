@@ -9,10 +9,7 @@ import { runTrajectoryQuery } from "./features/trajectory/trajectoryService.js";
 import { runRegionQuery } from "./features/region/regionService.js";
 import { runDensityQuery, setDensityBucketIndex, stopDensityPlayback, startDensityPlayback } from "./features/density/densityService.js";
 import { initRegionFlowFeature } from "./features/regionFlow/regionFlow.js";
-import { initSingleRegionFlowFeature } from "./features/regionFlow/singleRegionFlow.js";
-import { runFrequentPathQuery } from "./features/frequentPath/frequentPathService.js";
-import { initFrequentPathRegionFeature } from "./features/frequentPath/frequentPathRegionService.js";
-import { initFastestPathRegionFeature } from "./features/fastestPath/fastestPathRegionService.js";
+import { initRegionFlowStateFeature } from "./features/regionFlow/regionFlowState.js";
 function applyDefaultTimeValues() {
     const defaultStart = "2008-02-03T06:30";
     const defaultEnd = "2008-02-03T22:00";
@@ -22,10 +19,8 @@ function applyDefaultTimeValues() {
     qs("density-end").value = defaultEnd;
 	qs("region-flow-start").value = defaultStart;
 	qs("region-flow-end").value = defaultEnd;
-    qs("single-region-flow-start").value = defaultStart;
-    qs("single-region-flow-end").value = defaultEnd;
-    qs("fastest-path-start").value = defaultStart;
-    qs("fastest-path-end").value = defaultEnd;
+	qs("region-flow-state-start").value = defaultStart;
+	qs("region-flow-state-end").value = defaultEnd;
 }
 
 function attachButtonRipple(button) {
@@ -144,9 +139,7 @@ async function bootstrap() {
         installDensityMapInteractions();
         installRegionSelection();
 		initRegionFlowFeature();
-        initSingleRegionFlowFeature();
-        initFrequentPathRegionFeature();
-        initFastestPathRegionFeature();
+		initRegionFlowStateFeature();
         bindEvents();
         applyDefaultTimeValues();
         updateMetaStatus();
