@@ -86,40 +86,11 @@ struct SingleRegionFlowBucket {
     double outgoing = 0.0; // 目标区域 -> 其他区域
 };
 
-struct FlowBucketResult {
-    double aToB = 0.0;
-    double bToA = 0.0;
-    std::vector<FlowBucket> result;
-};
-struct RegionBucket {
-    long long bucketStart = 0;
-    double entering = 0.0;
-    double leaving = 0.0;
-    double inside = 0.0;
-};
 
-struct RegionFlowStateResult {
-    double totalEntering = 0.0;
-    double totalLeaving = 0.0;
-    std::vector<RegionBucket> result;
-};
-struct FlowBucketResult {
-    double aToB = 0.0;
-    double bToA = 0.0;
-    std::vector<FlowBucket> result;
-};
-struct RegionBucket {
-    long long bucketStart = 0;
-    double entering = 0.0;
-    double leaving = 0.0;
-    double inside = 0.0;
-};
 
-struct RegionFlowStateResult {
-    double totalEntering = 0.0;
-    double totalLeaving = 0.0;
-    std::vector<RegionBucket> result;
-};
+
+
+
 class DataManager {
 public:
     static void loadTxtFiles(const AppConfig& config);

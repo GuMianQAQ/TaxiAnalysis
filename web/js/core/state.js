@@ -46,7 +46,43 @@
     selectionLayer: null,
     activeDockPanel: null,
     openDockPanel: null,
+	frequentPath: {
+    lastResult: null
+	},
 
+	frequentPathRegion: {
+		selecting: false,
+		selectingTarget: null,
+		selectionLayer: null,
+		selectionStartPixel: null,
+		selectionEndPixel: null,
+		regionA: null,
+		regionB: null,
+		polygonA: null,
+		polygonB: null,
+		draggingTarget: null,
+		dragStartPoint: null,
+		dragOriginRegion: null,
+		lastResult: null
+	},
+
+	fastestPathRegion: {
+		selecting: false,
+		selectingTarget: null,
+		selectionLayer: null,
+		selectionStartPixel: null,
+		selectionEndPixel: null,
+		regionA: null,
+		regionB: null,
+		polygonA: null,
+		polygonB: null,
+		draggingTarget: null,
+		dragStartPoint: null,
+		dragOriginRegion: null,
+		lastResult: null,
+		currentBucketIndex: 0,
+		playTimer: null
+	},
     regionFlow: {
         selecting: false,
         selectingTarget: null,

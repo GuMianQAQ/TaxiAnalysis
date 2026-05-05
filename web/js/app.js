@@ -9,18 +9,31 @@ import { runTrajectoryQuery } from "./features/trajectory/trajectoryService.js";
 import { runRegionQuery } from "./features/region/regionService.js";
 import { runDensityQuery, setDensityBucketIndex, stopDensityPlayback, startDensityPlayback } from "./features/density/densityService.js";
 import { initRegionFlowFeature } from "./features/regionFlow/regionFlow.js";
+import { runFrequentPathQuery } from "./features/frequentPath/frequentPathService.js";
+import { initFrequentPathRegionFeature } from "./features/frequentPath/frequentPathRegionService.js";
+import { initFastestPathRegionFeature } from "./features/fastestPath/fastestPathRegionService.js";
 import { initRegionFlowStateFeature } from "./features/regionFlow/regionFlowState.js";
+function setInputValueIfExists(id, value) {
+    const element = qs(id);
+    if (element) {
+        element.value = value;
+    }
+}
+
 function applyDefaultTimeValues() {
     const defaultStart = "2008-02-03T06:30";
     const defaultEnd = "2008-02-03T22:00";
-    qs("region-start").value = defaultStart;
-    qs("region-end").value = defaultEnd;
-    qs("density-start").value = defaultStart;
-    qs("density-end").value = defaultEnd;
-	qs("region-flow-start").value = defaultStart;
-	qs("region-flow-end").value = defaultEnd;
-	qs("region-flow-state-start").value = defaultStart;
-	qs("region-flow-state-end").value = defaultEnd;
+
+    setInputValueIfExists("region-start", defaultStart);
+    setInputValueIfExists("region-end", defaultEnd);
+    setInputValueIfExists("density-start", defaultStart);
+    setInputValueIfExists("density-end", defaultEnd);
+    setInputValueIfExists("region-flow-start", defaultStart);
+    setInputValueIfExists("region-flow-end", defaultEnd);
+    setInputValueIfExists("region-flow-state-start", defaultStart);
+    setInputValueIfExists("region-flow-state-end", defaultEnd);
+    setInputValueIfExists("fastest-path-start", defaultStart);
+    setInputValueIfExists("fastest-path-end", defaultEnd);
 }
 
 function attachButtonRipple(button) {
@@ -44,7 +57,13 @@ function bindEvents() {
             activateDockPanel(button.dataset.panel);
         });
     });
-
+	qs("frequent-path-btn")?.addEventListener("click", async () => {
+    try {
+        await runFrequentPathQuery();
+    } catch (error) {
+        renderInfoPanel("frequent-path-info", [], error.message);
+    }
+});
     document.querySelectorAll("button").forEach((button) => {
         attachButtonRipple(button);
     });
@@ -120,13 +139,7 @@ function bindEvents() {
         startDensityPlayback();
     });
 
-    qs("frequent-path-btn").addEventListener("click", async () => {
-        try {
-            await runFrequentPathQuery();
-        } catch (error) {
-            renderInfoPanel("frequent-path-info", [], error.message);
-        }
-    });
+    
 }
 
 async function bootstrap() {
@@ -140,6 +153,8 @@ async function bootstrap() {
         installRegionSelection();
 		initRegionFlowFeature();
 		initRegionFlowStateFeature();
+		initFrequentPathRegionFeature();
+		initFastestPathRegionFeature();
         bindEvents();
         applyDefaultTimeValues();
         updateMetaStatus();
@@ -156,3 +171,5 @@ async function bootstrap() {
 bootstrap().catch((error) => {
     console.error(error);
 });
+
+
