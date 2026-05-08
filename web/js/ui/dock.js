@@ -6,6 +6,8 @@ import { resetDensityState } from "../features/density/densityStore.js";
 import { clearRegionFlowState } from "../features/regionFlow/regionFlow.js";
 import { renderInfoPanel, updateRegionStatus, updateModeStatus } from "../core/utils.js";
 import { clearRegionFlowStateAnalysis } from "../features/regionFlow/regionFlowState.js";
+import { clearFrequentPathRegionState } from "../features/frequentPath/frequentPathRegionService.js";
+import { clearFastestPathRegionState } from "../features/fastestPath/fastestPathRegionService.js";
 function setDockPanelState(name, open) {
     hideSelectionBox();
     if (state.selectingRegion) {
@@ -20,6 +22,12 @@ function setDockPanelState(name, open) {
 }
     if (name !== "region-flow") {
         clearRegionFlowState();
+    }
+    if (name !== "frequent-path-region") {
+        clearFrequentPathRegionState();
+    }
+    if (name !== "fastest-path-region") {
+        clearFastestPathRegionState();
     }
 
     document.querySelectorAll(".tool-btn[data-panel]").forEach((button) => {
@@ -65,6 +73,8 @@ function clearDockSelection() {
     renderInfoPanel("region-query-info", [], "等待查询");
     renderInfoPanel("density-info", [], "等待查询");
     clearRegionFlowState();
+    clearFrequentPathRegionState();
+    clearFastestPathRegionState();
     state.activeDockPanel = null;
     state.openDockPanel = null;
     document.querySelectorAll(".tool-btn[data-panel]").forEach((button) => {

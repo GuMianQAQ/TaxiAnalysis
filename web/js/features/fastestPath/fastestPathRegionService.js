@@ -166,19 +166,52 @@ function startSelectRegion(target) {
     ftr.selectingTarget = target;
     ftr.selectionStartPixel = null;
     ftr.selectionEndPixel = null;
+    ftr.selectionRestoreRegion = cloneRegion(target === "A" ? ftr.regionA : ftr.regionB);
+    ensureSelectionLayer().classList.add("active");
     hideSelectionBox();
     lockMapIfNeeded();
     updateModeStatus(`框选通行时间区域 ${target}`);
 }
 
+function previewSelectingTarget(startPixel, endPixel) {
+    const ftr = getFTR();
+    const target = ftr.selectingTarget;
+    if (!target || !startPixel || !endPixel) return;
+
+    const region = regionFromPixels(startPixel, endPixel);
+    if (target === "A") {
+        ftr.regionA = region;
+        renderRegion("A");
+    } else if (target === "B") {
+        ftr.regionB = region;
+        renderRegion("B");
+    }
+}
+
 function cancelSelectRegion() {
     const ftr = getFTR();
+    const selectionTarget = ftr.selectingTarget;
+    const selectionRestoreRegion = cloneRegion(ftr.selectionRestoreRegion);
     ftr.selecting = false;
     ftr.selectingTarget = null;
     ftr.selectionStartPixel = null;
     ftr.selectionEndPixel = null;
     hideSelectionBox();
+    if (ftr.selectionLayer) {
+        ftr.selectionLayer.classList.remove("active");
+    }
+    ftr.selectionRestoreRegion = null;
+    if (selectionTarget) {
+        if (selectionTarget === "A") {
+            ftr.regionA = selectionRestoreRegion;
+            renderRegion("A");
+        } else if (selectionTarget === "B") {
+            ftr.regionB = selectionRestoreRegion;
+            renderRegion("B");
+        }
+    }
     lockMapIfNeeded();
+    updateModeStatus("地图");
 }
 
 function beginRegionDrag(target, point) {
@@ -226,6 +259,9 @@ function endRegionDrag() {
 function clearRegion(target) {
     const ftr = getFTR();
     cancelSelectRegion();
+    if (ftr.draggingTarget === target) {
+        endRegionDrag();
+    }
     const polygonKey = target === "A" ? "polygonA" : "polygonB";
     if (ftr[polygonKey]) {
         state.map.removeOverlay(ftr[polygonKey]);
@@ -458,6 +494,7 @@ function installSelection() {
             y: event.clientY - rect.top
         };
         showSelectionBox(ftr.selectionStartPixel, ftr.selectionEndPixel);
+        previewSelectingTarget(ftr.selectionStartPixel, ftr.selectionEndPixel);
         event.preventDefault();
     });
 
@@ -474,6 +511,7 @@ function installSelection() {
                 y: event.clientY - rect.top
             };
             showSelectionBox(ftr.selectionStartPixel, ftr.selectionEndPixel);
+            previewSelectingTarget(ftr.selectionStartPixel, ftr.selectionEndPixel);
             return;
         }
         if (!ftr.draggingTarget) return;
@@ -517,6 +555,31 @@ function installSelection() {
     });
 }
 
+function clearFastestPathRegionState() {
+    const ftr = getFTR();
+    cancelSelectRegion();
+    endRegionDrag();
+    stopPlayback();
+    if (ftr.lastResult) {
+        clearTrajectoryOverlays();
+    }
+    if (ftr.polygonA && state.map) {
+        state.map.removeOverlay(ftr.polygonA);
+        ftr.polygonA = null;
+    }
+    if (ftr.polygonB && state.map) {
+        state.map.removeOverlay(ftr.polygonB);
+        ftr.polygonB = null;
+    }
+    ftr.regionA = null;
+    ftr.regionB = null;
+    ftr.lastResult = null;
+    ftr.currentBucketIndex = 0;
+    updateRegionInfo();
+    updateBucketControls();
+    renderInfoPanel("fastest-path-info", [], "等待分析");
+}
+
 function initFastestPathRegionFeature() {
     ensureSelectionLayer();
     updateRegionInfo();
@@ -557,5 +620,6 @@ function initFastestPathRegionFeature() {
 
 export {
     initFastestPathRegionFeature,
-    runFastestPathQuery
+    runFastestPathQuery,
+    clearFastestPathRegionState
 };

@@ -166,19 +166,52 @@ function startSelectRegion(target) {
     fpr.selectingTarget = target;
     fpr.selectionStartPixel = null;
     fpr.selectionEndPixel = null;
+    fpr.selectionRestoreRegion = cloneRegion(target === "A" ? fpr.regionA : fpr.regionB);
+    ensureSelectionLayer().classList.add("active");
     hideSelectionBox();
     lockMapIfNeeded();
     updateModeStatus(`框选频繁路径区域 ${target}`);
 }
 
+function previewSelectingTarget(startPixel, endPixel) {
+    const fpr = getFPR();
+    const target = fpr.selectingTarget;
+    if (!target || !startPixel || !endPixel) return;
+
+    const region = regionFromPixels(startPixel, endPixel);
+    if (target === "A") {
+        fpr.regionA = region;
+        renderRegion("A");
+    } else if (target === "B") {
+        fpr.regionB = region;
+        renderRegion("B");
+    }
+}
+
 function cancelSelectRegion() {
     const fpr = getFPR();
+    const selectionTarget = fpr.selectingTarget;
+    const selectionRestoreRegion = cloneRegion(fpr.selectionRestoreRegion);
     fpr.selecting = false;
     fpr.selectingTarget = null;
     fpr.selectionStartPixel = null;
     fpr.selectionEndPixel = null;
     hideSelectionBox();
+    if (fpr.selectionLayer) {
+        fpr.selectionLayer.classList.remove("active");
+    }
+    fpr.selectionRestoreRegion = null;
+    if (selectionTarget) {
+        if (selectionTarget === "A") {
+            fpr.regionA = selectionRestoreRegion;
+            renderRegion("A");
+        } else if (selectionTarget === "B") {
+            fpr.regionB = selectionRestoreRegion;
+            renderRegion("B");
+        }
+    }
     lockMapIfNeeded();
+    updateModeStatus("地图");
 }
 
 function beginRegionDrag(target, point) {
@@ -228,6 +261,9 @@ function endRegionDrag() {
 function clearRegion(target) {
     const fpr = getFPR();
     cancelSelectRegion();
+    if (fpr.draggingTarget === target) {
+        endRegionDrag();
+    }
     const polygonKey = target === "A" ? "polygonA" : "polygonB";
     if (fpr[polygonKey]) {
         state.map.removeOverlay(fpr[polygonKey]);
@@ -369,6 +405,7 @@ function installSelection() {
             y: event.clientY - rect.top
         };
         showSelectionBox(fpr.selectionStartPixel, fpr.selectionEndPixel);
+        previewSelectingTarget(fpr.selectionStartPixel, fpr.selectionEndPixel);
         event.preventDefault();
     });
 
@@ -385,6 +422,7 @@ function installSelection() {
                 y: event.clientY - rect.top
             };
             showSelectionBox(fpr.selectionStartPixel, fpr.selectionEndPixel);
+            previewSelectingTarget(fpr.selectionStartPixel, fpr.selectionEndPixel);
             return;
         }
         if (!fpr.draggingTarget) return;
@@ -428,6 +466,28 @@ function installSelection() {
     });
 }
 
+function clearFrequentPathRegionState() {
+    const fpr = getFPR();
+    cancelSelectRegion();
+    endRegionDrag();
+    if (fpr.lastResult) {
+        clearTrajectoryOverlays();
+    }
+    if (fpr.polygonA && state.map) {
+        state.map.removeOverlay(fpr.polygonA);
+        fpr.polygonA = null;
+    }
+    if (fpr.polygonB && state.map) {
+        state.map.removeOverlay(fpr.polygonB);
+        fpr.polygonB = null;
+    }
+    fpr.regionA = null;
+    fpr.regionB = null;
+    fpr.lastResult = null;
+    updateRegionInfo();
+    renderInfoPanel("frequent-path-region-info", [], "等待分析");
+}
+
 function initFrequentPathRegionFeature() {
     ensureSelectionLayer();
     updateRegionInfo();
@@ -448,5 +508,6 @@ function initFrequentPathRegionFeature() {
 
 export {
     initFrequentPathRegionFeature,
-    runFrequentPathRegionQuery
+    runFrequentPathRegionQuery,
+    clearFrequentPathRegionState
 };
